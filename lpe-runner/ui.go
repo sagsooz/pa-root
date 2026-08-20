@@ -71,6 +71,9 @@ func logf(level, msg string, args ...any) {
 		tag, c = "[?]", colW
 	}
 	fmt.Printf("%s%s%s %s\n", c, tag, colZ, fmt.Sprintf(msg, args...))
+	// Flush immediately so progress shows up in real time even when
+	// stdout is a pipe (e.g. `curl | sh`), where Go otherwise line-buffers.
+	os.Stdout.Sync()
 }
 
 func okf(f string, a ...any)   { logf("ok", f, a...) }
