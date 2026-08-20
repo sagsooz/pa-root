@@ -108,45 +108,59 @@ func runSingle(s *systemInfo, name string, stop *bool) {
 // runFullSweep iterates the catalog grouped by phase, stopping on root
 // unless -no-stop was given.
 func runFullSweep(s *systemInfo, stop *bool) {
-	headf("Phase 1: SUID / sudo / misconfig (autoroot.pl)")
+	// Phase 1: SUID / GTFOBins abuse — cheap, fast, high-yield. Run FIRST.
+	headf("Phase 1: SUID scan + GTFOBins abuse")
+	suidPhase(s, stop)
+	if *stop {
+		return
+	}
+
+	// Phase 2: autoroot.pl misconfig sweep (sudo -l, /etc/passwd, etc.)
 	if !*flagNoScript {
+		headf("Phase 2: Sudo / misconfig (autoroot.pl)")
 		runAutorootPhases(s, stop)
 		if *stop {
 			return
 		}
 	}
 
-	headf("Phase 2: Kernel LPE static binaries")
+	// Phase 3: Kernel LPE static binaries.
+	headf("Phase 3: Kernel LPE static binaries")
 	runBinaryExploits(s, stop)
 	if *stop {
 		return
 	}
 
+	// Phase 4: Compile-and-run C sources.
 	if !*flagNoSrc {
-		headf("Phase 3: Compile-and-run C sources")
+		headf("Phase 4: Compile-and-run C sources")
 		runCompileExploits(s, stop)
 		if *stop {
 			return
 		}
 	}
 
+	// Phase 5: CVE directory exploits.
 	if !*flagNoDir {
-		headf("Phase 4: CVE directory exploits")
+		headf("Phase 5: CVE directory exploits")
 		runDirExploits(s, stop)
 		if *stop {
 			return
 		}
 	}
 
+	// Phase 6: Python / Bash / Perl scripts.
 	if !*flagNoScript {
-		headf("Phase 5: Python / Bash / Perl scripts")
+		headf("Phase 6: Python / Bash / Perl scripts")
 		runScriptExploits(s, stop)
 		if *stop {
 			return
 		}
 	}
 
+	// Phase 7: Copyfail pm.txt matrix (last — noisy).
 	if !*flagNoCf {
+		headf("Phase 7: Copyfail pm.txt matrix")
 		runCopyfailMatrix(s, stop)
 		if *stop {
 			return
