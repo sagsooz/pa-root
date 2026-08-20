@@ -6,10 +6,10 @@
 # automatically by the binary itself at runtime.
 #
 # Usage (one line):
-#   curl -sL https://raw.githubusercontent.com/sagsooz/pa-root/main/lpe-runner/install.sh | sh
+#   curl -sL https://raw.githubusercontent.com/sagsooz/pa-root/refs/heads/main/lpe-runner/install.sh | sh
 #
 # Or, if curl is missing:
-#   wget -qO- https://raw.githubusercontent.com/sagsooz/pa-root/main/lpe-runner/install.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/sagsooz/pa-root/refs/heads/main/lpe-runner/install.sh | sh
 #
 # After install, you can also run directly:
 #   ./lpe-runner -list
@@ -17,7 +17,7 @@
 #   ./lpe-runner
 
 set -e
-REPO="https://raw.githubusercontent.com/sagsooz/pa-root/main"
+REPO="https://raw.githubusercontent.com/sagsooz/pa-root/refs/heads/main"
 BIN="lpe-runner"
 DIR="${LPE_DIR:-/tmp/.lpe}"
 

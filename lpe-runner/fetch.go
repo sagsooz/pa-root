@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,8 +13,12 @@ import (
 )
 
 // defaultRepoURL is the raw-content base for the pa-root GitHub repo.
-// Individual files are fetched from <repoURL>/<filename>.
-const defaultRepoURL = "https://raw.githubusercontent.com/sagsooz/pa-root/main"
+// We use the /refs/heads/main/ form because the shorter /main/ form can
+// make GitHub's CDN redirect in a way the Go net/http client does not
+// always follow cleanly on some servers, while curl -L handles it fine.
+// curl/wget always work, so we try those first and only fall back to the
+// built-in HTTP client.
+const defaultRepoURL = "https://raw.githubusercontent.com/sagsooz/pa-root/refs/heads/main"
 
 // fetch state (package-global).
 var (
@@ -66,14 +71,45 @@ func ensureFile(relPath string, isDir bool) bool {
 }
 
 // fetchOne downloads one file from the repo into the runner's own directory.
-// Tries native HTTP first (with TLS skip-verify for broken-CA targets), then
-// falls back to curl, then wget. On a 404 it retries once with the alternate
-// branch (main↔master) and locks in the working URL.
+//
+// Order of attempts (each succeeds-or-falls-through quickly):
+//  1. curl -sL          (matches the bootstrap that already works on the box)
+//  2. wget              (fallback)
+//  3. native Go HTTP    (last resort; IPv4-only, short timeout, TLS skip)
+//
+// We prefer curl/wget because they are exactly what the install.sh
+// bootstrap uses successfully; the Go net/http client can hang on some
+// VPS networks where curl sails through.
 func fetchOne(relPath string) bool {
 	dst := absBin(relPath)
-	if ok, status := httpFetch(fetchRepo+"/"+relPath, dst); ok {
+	url := fetchRepo + "/" + relPath
+
+	// 1. curl
+	if hasBin("curl") {
+		c := exec.Command("curl", "-sL", "--connect-timeout", "10", "--max-time", "60",
+			"--retry", "2", "-o", dst, url)
+		if c.Run() == nil && sanityCheck(dst) {
+			_ = os.Chmod(dst, 0o755)
+			return true
+		}
+		_ = os.Remove(dst) // cleanup partial
+	}
+
+	// 2. wget
+	if hasBin("wget") {
+		c := exec.Command("wget", "-q", "--no-check-certificate",
+			"--timeout=10", "--tries=2", "-O", dst, url)
+		if c.Run() == nil && sanityCheck(dst) {
+			_ = os.Chmod(dst, 0o755)
+			return true
+		}
+		_ = os.Remove(dst)
+	}
+
+	// 3. native Go HTTP (last resort, IPv4-only, short timeout)
+	if ok, status := httpFetch(url, dst); ok {
 		_ = os.Chmod(dst, 0o755)
-		return sanityCheck(dst)
+		return true
 	} else if status == 404 {
 		// Try the alternate branch once.
 		alt := alternateBranch(fetchRepo)
@@ -81,36 +117,27 @@ func fetchOne(relPath string) bool {
 			if ok, _ := httpFetch(alt+"/"+relPath, dst); ok {
 				_ = os.Chmod(dst, 0o755)
 				fetchRepo = alt
-				return sanityCheck(dst)
+				return true
 			}
-		}
-	}
-	// Fall back to curl.
-	if hasBin("curl") {
-		c := exec.Command("curl", "-sL", "--retry", "2", "-o", dst, fetchRepo+"/"+relPath)
-		if c.Run() == nil && sanityCheck(dst) {
-			_ = os.Chmod(dst, 0o755)
-			return true
-		}
-	}
-	// Fall back to wget.
-	if hasBin("wget") {
-		c := exec.Command("wget", "-q", "--no-check-certificate", "-O", dst, fetchRepo+"/"+relPath)
-		if c.Run() == nil && sanityCheck(dst) {
-			_ = os.Chmod(dst, 0o755)
-			return true
 		}
 	}
 	return false
 }
 
-// httpFetch does a GET with a 60s timeout and TLS verify disabled. Returns
-// (ok, statusCode). ok=true only on HTTP 200 + a non-tiny body.
+// httpFetch does a GET with a 20s timeout, IPv4-only, TLS verify disabled.
+// Returns (ok, statusCode). ok=true only on HTTP 200 + a non-tiny body.
 func httpFetch(url, dst string) (bool, int) {
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+		// IPv4-only: avoids hanging on broken IPv6 stacks common on cheap VPS.
+		Resolver: &net.Resolver{PreferGo: true},
+	}
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: 20 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+			DialContext:       dialer.DialContext,
+			DisableKeepAlives: true,
 		},
 	}
 	req, err := http.NewRequest("GET", url, nil)
