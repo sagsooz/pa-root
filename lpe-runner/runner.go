@@ -55,6 +55,17 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 	}
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// Open /dev/null and wire it to the child's stdin so NO exploit can
+	// hang waiting for user input (e.g. sudo asking for a password, su,
+	// passwd). The exploit gets immediate EOF on stdin and fails fast
+	// instead of stalling until the timeout kills it.
+	if devNull, err := os.Open("/dev/null"); err == nil {
+		c.Stdin = devNull
+		defer devNull.Close()
+	} else {
+		c.Stdin = nil // fallback: inherit, less safe
+	}
+
 	var so, se strings.Builder
 	c.Stdout = &so
 	c.Stderr = &se

