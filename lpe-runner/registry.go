@@ -83,7 +83,7 @@ func registry() []Exploit {
 		{Name: "copyfail_su", Kind: kindBinary, Path: "copyfail_su", Lo: z, Hi: z, Desc: "copyfail su variant"},
 		{Name: "dirtypi", Kind: kindBinary, Path: "dirtypi", Lo: z, Hi: z, Desc: "DirtyPi LPE"},
 		{Name: "overlay", Kind: kindBinary, Path: "overlay", Lo: z, Hi: z, Desc: "overlay (compiled)"},
-		{Name: "2025mod", Kind: kindBinary, Path: "2025mod", Lo: z, Hi: z, Desc: "2025 mod LPE"},
+		{Name: "2025mod", Kind: kindBinary, Path: "2025mod", Lo: z, Hi: z, Desc: "2025 mod LPE", Timeout: 120},
 
 		// ── Scripts ─────────────────────────────────────────────────────────
 		{Name: "copyfail.py", Kind: kindScript, Path: "copyfail.py", Args: []string{"python3"}, Lo: z, Hi: z, Desc: "CVE-2026-31431 copyfail.py (su)", Needs: []string{"python3"}},
