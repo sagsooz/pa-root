@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,6 +48,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -v                  Verbose (print child stdout/stderr)")
 	fmt.Fprintln(os.Stderr, "  -repo URL           GitHub raw base for auto-fetch (default: sagsooz/pa-root/main)")
 	fmt.Fprintln(os.Stderr, "  -no-fetch           Disable auto-download of missing exploit files")
+	fmt.Fprintln(os.Stderr, "  -jobs N             Parallel exploit workers (default: auto)")
 	fmt.Fprintln(os.Stderr, "")
 }
 
@@ -252,45 +255,64 @@ func runBinaryExploits(s *systemInfo, stop *bool) {
 		}
 		return bin[i].Name < bin[j].Name
 	})
-	for _, e := range bin {
-		if *stop {
-			return
-		}
-		runOne(s, e, stop)
-	}
+	infof("Running %d binary exploits across %d parallel workers", len(bin), workerCount())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	runPool(ctx, s, bin, stop, &wg)
+	wg.Wait()
 }
 
 func runCompileExploits(s *systemInfo, stop *bool) {
+	var c []Exploit
 	for _, e := range registry() {
-		if *stop {
-			return
-		}
 		if e.Kind == kindCompile {
-			runOne(s, e, stop)
+			c = append(c, e)
 		}
 	}
+	if len(c) == 0 {
+		return
+	}
+	infof("Compiling %d sources across %d workers", len(c), workerCount())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	runPool(ctx, s, c, stop, &wg)
+	wg.Wait()
 }
 
 func runDirExploits(s *systemInfo, stop *bool) {
+	var d []Exploit
 	for _, e := range registry() {
-		if *stop {
-			return
-		}
 		if e.Kind == kindDir {
-			runOne(s, e, stop)
+			d = append(d, e)
 		}
 	}
+	if len(d) == 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	runPool(ctx, s, d, stop, &wg)
+	wg.Wait()
 }
 
 func runScriptExploits(s *systemInfo, stop *bool) {
+	var sc []Exploit
 	for _, e := range registry() {
-		if *stop {
-			return
-		}
 		if e.Kind == kindScript && !e.NoRoot {
-			runOne(s, e, stop)
+			sc = append(sc, e)
 		}
 	}
+	if len(sc) == 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	runPool(ctx, s, sc, stop, &wg)
+	wg.Wait()
 }
 
 // runAutorootPhases delegates the SUID/sudo/passwd/pwnkit misconfig sweep to
