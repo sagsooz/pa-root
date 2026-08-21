@@ -165,17 +165,42 @@ var suidShellPaths = []string{
 	"/root/.sb",
 }
 
-// isSUIDBash checks whether /bin/bash (or a known drop path) is now SUID.
+// isSUIDBash checks whether any known drop path has a SUID-root shell.
+// Uses isSUIDRootFile (which checks owner==root) to avoid false positives
+// from user-owned SUID files.
 func isSUIDBash() bool {
 	for _, p := range suidShellPaths {
-		if isSUIDFile(p) {
+		if isSUIDRootFile(p) {
 			return true
 		}
 	}
 	return false
 }
 
-// isSUIDFile checks the setuid bit on a file.
+// isSUIDRootFile checks that a file (a) exists, (b) has the setuid bit,
+// AND (c) is owned by root (uid 0). Checking only the SUID bit leads to
+// false positives — any user can create a SUID file owned by themselves,
+// which is useless for privilege escalation. Only root-owned SUID files
+// actually grant root.
+func isSUIDRootFile(p string) bool {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	// Must have the setuid bit.
+	if fi.Mode()&os.ModeSetuid == 0 {
+		return false
+	}
+	// Must be owned by root (uid 0).
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return stat.Uid == 0
+	}
+	// On platforms where we can't read the owner, fall back to yes.
+	return true
+}
+
+// isSUIDFile is kept for backward compat with the catalog (which only
+// cares about the SUID bit on system binaries like /usr/bin/find).
 func isSUIDFile(p string) bool {
 	fi, err := os.Stat(p)
 	if err != nil {
@@ -207,7 +232,7 @@ func rootspawn(r *runResult) bool {
 	// Prefer a SUID bash dropped by the exploit. Try the canonical list
 	// (kept in sync with what each static binary actually writes).
 	for _, p := range suidShellPaths {
-		if isSUIDFile(p) {
+		if isSUIDRootFile(p) {
 			shellPath = p
 			shellArgs = []string{"-p"}
 			break

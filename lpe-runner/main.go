@@ -380,7 +380,7 @@ func finalize(s *systemInfo, stop *bool) {
 			if isSUIDBash() {
 				path := ""
 				for _, p := range suidShellPaths {
-					if isSUIDFile(p) {
+					if isSUIDRootFile(p) {
 						path = p
 						break
 					}
