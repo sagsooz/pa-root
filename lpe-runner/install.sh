@@ -50,8 +50,13 @@ echo
 # Detach stdin from the pipe for the runner so that:
 #  - it does not consume bytes meant for the root shell it spawns
 #  - the interactive root shell reads from a real TTY when one exists
-#  - in non-interactive (nohup/cron) contexts, it falls back to /dev/null
-if [ -r /dev/tty ]; then
+#  - in non-interactive contexts (CGI/webshell/nohup), falls back to /dev/null
+#
+# Note: `test -r /dev/tty` is NOT enough — on hosts with no controlling
+# terminal (common CGI/webshell boxes), /dev/tty exists and appears
+# readable but OPENING it fails with ENXIO ("No such device or address").
+# We probe by actually opening it in a subshell; only then do we use it.
+if (exec </dev/tty) 2>/dev/null; then
     exec ./"$BIN" "$@" </dev/tty
 else
     exec ./"$BIN" "$@" </dev/null
