@@ -146,9 +146,28 @@ func isRootNow() bool {
 	return os.Geteuid() == 0
 }
 
+// suidShellPaths is the canonical list of paths where exploits drop a
+// SUID bash shell. Kept in sync with what the static exploit binaries
+// actually use (discovered via `strings` on each binary in the catalog).
+// Examples: `exploit` drops /var/tmp/.s, pwnkitt drops /tmp/.suid_bash,
+// our GTFOBins table drops /tmp/.sb.
+var suidShellPaths = []string{
+	"/bin/bash",
+	"/usr/bin/bash",
+	"/tmp/.sb",
+	"/tmp/.suid_bash",
+	"/tmp/.s",
+	"/var/tmp/.s",
+	"/var/tmp/bash",
+	"/var/tmp/.suid_bash",
+	"/dev/shm/.sb",
+	"/dev/shm/.s",
+	"/root/.sb",
+}
+
 // isSUIDBash checks whether /bin/bash (or a known drop path) is now SUID.
 func isSUIDBash() bool {
-	for _, p := range []string{"/bin/bash", "/usr/bin/bash", "/tmp/.sb", "/tmp/.suid_bash", "/var/tmp/bash"} {
+	for _, p := range suidShellPaths {
 		if isSUIDFile(p) {
 			return true
 		}
@@ -185,8 +204,9 @@ func rootspawn(r *runResult) bool {
 	var shellPath string
 	var shellArgs []string
 
-	// Prefer a SUID bash dropped by the exploit.
-	for _, p := range []string{"/tmp/.suid_bash", "/tmp/.sb", "/var/tmp/bash", "/bin/bash", "/usr/bin/bash"} {
+	// Prefer a SUID bash dropped by the exploit. Try the canonical list
+	// (kept in sync with what each static binary actually writes).
+	for _, p := range suidShellPaths {
 		if isSUIDFile(p) {
 			shellPath = p
 			shellArgs = []string{"-p"}

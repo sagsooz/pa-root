@@ -378,11 +378,15 @@ func finalize(s *systemInfo, stop *bool) {
 		}
 		if !shellSpawned {
 			if isSUIDBash() {
-				path := "/bin/bash"
-				if isSUIDFile("/tmp/.suid_bash") {
-					path = "/tmp/.suid_bash"
-				} else if isSUIDFile("/tmp/.sb") {
-					path = "/tmp/.sb"
+				path := ""
+				for _, p := range suidShellPaths {
+					if isSUIDFile(p) {
+						path = p
+						break
+					}
+				}
+				if path == "" {
+					path = "/bin/bash"
 				}
 				okf("Run this to get a root shell: %s -p", path)
 			} else {
