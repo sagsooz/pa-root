@@ -198,6 +198,8 @@ func runOne(s *systemInfo, e Exploit, stop *bool) {
 	}
 	// Print a "running" line BEFORE the exploit starts so the user sees
 	// progress during long (45-120s) runs. runIsolated is silent until done.
+	// Clean temp files this single-use exploit would choke on.
+	cleanupExploit(&e)
 	stepf("%-26s running... (%s)", e.Name, e.Desc)
 	var r runResult
 	switch e.Kind {

@@ -28,6 +28,11 @@ type Exploit struct {
 	Needs   []string // required host tools (e.g. "gcc", "python3")
 	Timeout int      // seconds; 0 = use default
 	NoRoot  bool     // true = never auto-spawn shell (e.g. mass-shell-injection)
+	// Cleanup is a list of temp file/dir patterns to remove BEFORE running
+	// this exploit. Many exploits are single-use: they create temp files
+	// (e.g. /tmp/loader, /var/tmp/.s) and FAIL if those files already exist
+	// from a previous run. Cleaning them first makes re-runs work.
+	Cleanup []string
 }
 
 // defaultTimeout used when Exploit.Timeout == 0.
@@ -46,7 +51,8 @@ func registry() []Exploit {
 		{Name: "fragnesia2-static", Kind: kindBinary, Path: "fragnesia2-static", Lo: [3]int{5, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "Fragnesia v2"},
 		{Name: "dirtydecrypt-static", Kind: kindBinary, Path: "dirtydecrypt-static", Lo: [3]int{5, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "DirtyDecrypt LPE"},
 		{Name: "pintheft-static", Kind: kindBinary, Path: "pintheft-static", Lo: [3]int{5, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "PIN theft LPE"},
-		{Name: "cifswitch-static", Kind: kindBinary, Path: "cifswitch-static", Lo: [3]int{5, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "cifswitch LPE"},
+		{Name: "cifswitch-static", Kind: kindBinary, Path: "cifswitch-static", Lo: [3]int{5, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "cifswitch LPE",
+			Cleanup: []string{"/tmp/cifswitch_*", "/var/tmp/cifswitch_rootsh"}},
 		{Name: "pidfd-race-static", Kind: kindBinary, Path: "pidfd-race-static", Lo: [3]int{5, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "pidfd race LPE"},
 		{Name: "packet-edit-meme-static", Kind: kindBinary, Path: "packet-edit-meme-static", Lo: [3]int{5, 18, 0}, Hi: [3]int{7, 1, 99}, Desc: "packet edit mem LPE"},
 		{Name: "dirtyclone-static", Kind: kindBinary, Path: "dirtyclone-static", Lo: [3]int{7, 0, 0}, Hi: [3]int{7, 1, 99}, Desc: "CVE-2026-43503 DirtyClone"},
@@ -65,7 +71,8 @@ func registry() []Exploit {
 
 		// ── Service / polkit / docker ───────────────────────────────────────
 		{Name: "pwnkit-new-static", Kind: kindBinary, Path: "pwnkit-new-static", Lo: z, Hi: z, Desc: "CVE-2021-4034 PwnKit", Timeout: 30},
-		{Name: "pack2theroot-static", Kind: kindBinary, Path: "pack2theroot-static", Lo: z, Hi: z, Desc: "CVE-2026-41651 PackageKit TOCTOU", Timeout: 90},
+		{Name: "pack2theroot-static", Kind: kindBinary, Path: "pack2theroot-static", Lo: z, Hi: z, Desc: "CVE-2026-41651 PackageKit TOCTOU", Timeout: 90,
+			Cleanup: []string{"/tmp/.skp-dummy-*.deb", "/tmp/.skp-payload-*.deb", "/var/tmp/.suid_bash"}},
 		{Name: "polkit-dbus-static", Kind: kindBinary, Path: "polkit-dbus-static", Lo: z, Hi: z, Desc: "Polkit D-Bus LPE"},
 		{Name: "docker-sock-static", Kind: kindBinary, Path: "docker-sock-static", Lo: z, Hi: z, Desc: "Docker socket LPE"},
 
@@ -74,10 +81,12 @@ func registry() []Exploit {
 		{Name: "debian11-xpl2026", Kind: kindBinary, Path: "debian11-xpl2026", Lo: [3]int{5, 10, 0}, Hi: [3]int{5, 10, 99}, Desc: "Debian11 2026 LPE"},
 		{Name: "CVE-2025-21756", Kind: kindBinary, Path: "CVE-2025-21756", Lo: z, Hi: z, Desc: "CVE-2025-21756 LPE"},
 		{Name: "exp", Kind: kindBinary, Path: "exp", Lo: z, Hi: z, Desc: "Generic exp binary"},
-		{Name: "exploit", Kind: kindBinary, Path: "exploit", Lo: z, Hi: z, Desc: "Generic exploit binary"},
+		{Name: "exploit", Kind: kindBinary, Path: "exploit", Lo: z, Hi: z, Desc: "Generic exploit binary",
+			Cleanup: []string{"/tmp/loader", "/var/tmp/.s", "/tmp/snap.bin"}},
 		{Name: "PwnKit", Kind: kindBinary, Path: "PwnKit", Lo: z, Hi: z, Desc: "PwnKit (downloaded)"},
 		{Name: "pwnkit2", Kind: kindBinary, Path: "pwnkit2", Lo: z, Hi: z, Desc: "PwnKit variant 2"},
-		{Name: "pwnkitt", Kind: kindBinary, Path: "pwnkitt", Lo: z, Hi: z, Desc: "PwnKit variant t"},
+		{Name: "pwnkitt", Kind: kindBinary, Path: "pwnkitt", Lo: z, Hi: z, Desc: "PwnKit variant t",
+			Cleanup: []string{"/tmp/.pk-dummy-*.deb", "/tmp/.pk-payload-*.deb", "/tmp/.suid_bash"}},
 		{Name: "copyfail_binsu", Kind: kindBinary, Path: "copyfail_binsu", Lo: z, Hi: z, Desc: "copyfail /bin/su variant"},
 		{Name: "copyfail_mu", Kind: kindBinary, Path: "copyfail_mu", Lo: z, Hi: z, Desc: "copyfail multi variant"},
 		{Name: "copyfail_su", Kind: kindBinary, Path: "copyfail_su", Lo: z, Hi: z, Desc: "copyfail su variant"},

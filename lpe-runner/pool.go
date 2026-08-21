@@ -102,6 +102,11 @@ func runOneConcurrent(ctx context.Context, s *systemInfo, e Exploit, stop *bool)
 		to = 30
 	}
 
+	// Clean temp files this single-use exploit would choke on. Many
+	// exploits fail with "loader drop failed" / "helper drop failed" if
+	// their temp files already exist from a previous run.
+	cleanupExploit(&e)
+
 	stepf("%-26s running... (%s)", e.Name, e.Desc)
 
 	var r runResult
