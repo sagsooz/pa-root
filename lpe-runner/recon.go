@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // systemInfo holds recon results gathered once at startup.
@@ -74,7 +76,9 @@ func cmdOut(name string, args ...string) string {
 }
 
 func cmdOutT(timeout int, name string, args ...string) string {
-	c := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, name, args...)
 	out, _ := c.Output()
 	return strings.TrimSpace(string(out))
 }

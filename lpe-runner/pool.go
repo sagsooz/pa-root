@@ -62,10 +62,13 @@ func runPool(ctx context.Context, s *systemInfo, exploits []Exploit, stop *bool,
 		}
 		select {
 		case <-ctx.Done():
-			break
+			// `break` inside a select only exits the select, not the for
+			// loop — use a labeled break via goto to avoid spinning.
+			goto done
 		case jobs <- e:
 		}
 	}
+done:
 	close(jobs)
 }
 
@@ -98,7 +101,9 @@ func runOneConcurrent(ctx context.Context, s *systemInfo, e Exploit, stop *bool)
 		to = defaultTimeout
 	}
 	// Cap at 30s in concurrent mode (was 45s) to keep the pool moving.
-	if to > 30 && to < 120 {
+	// Cap unconditionally — 120s exploits (2025mod, CVE-2026-41651) were
+	// bypassing the cap because the old `< 120` let them through.
+	if to > 30 {
 		to = 30
 	}
 
@@ -149,7 +154,7 @@ func spawnOnce(s *systemInfo, r *runResult, stop *bool) {
 		return
 	}
 	if !*flagNoSpawn {
-		shellSpawned = rootspawn(r)
+		shellSpawned.Store(rootspawn(r))
 	}
 	spawned = true
 	*stop = true

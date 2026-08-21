@@ -70,13 +70,17 @@ func runCopyfailMatrix(s *systemInfo, stop *bool) {
 			r2 := runIsolated(name+"#followup", "", strings.Fields(t.run), 30*time.Second)
 			r2.report()
 			if r2.rootAfter || r2.suidAfter {
-				rootspawn(&r2)
+				if !*flagNoSpawn {
+					shellSpawned.Store(rootspawn(&r2))
+				}
 				*stop = true
 				return
 			}
 		}
 		if r.rootAfter || r.suidAfter {
-			rootspawn(&r)
+			if !*flagNoSpawn {
+				shellSpawned.Store(rootspawn(&r))
+			}
 			*stop = true
 			return
 		}

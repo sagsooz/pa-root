@@ -76,7 +76,10 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 		c.Stdin = devNull
 		defer devNull.Close()
 	} else {
-		c.Stdin = nil // fallback: inherit, less safe
+		// /dev/null unavailable — use a zero-byte reader so the child
+		// gets immediate EOF instead of inheriting the parent's stdin
+		// (which could be a live TTY and cause interactive hangs).
+		c.Stdin = strings.NewReader("")
 	}
 
 	var so, se strings.Builder
@@ -312,15 +315,29 @@ func spawnPTY(bin string, args ...string) {
 	c.Stdout = tty
 	c.Stderr = tty
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Forward terminal signals to the child.
+	// Forward terminal signals to the child's process group, then stop
+	// intercepting once the child exits so we don't leak the goroutine
+	// or swallow Ctrl-C for the rest of the runner's lifetime.
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
 	go func() {
-		for range ch {
-			// let the child get the signal via tty
+		for {
+			select {
+			case <-done:
+				return
+			case sig := <-ch:
+				if c.Process != nil {
+					if pgid, err := syscall.Getpgid(c.Process.Pid); err == nil {
+						_ = syscall.Kill(-pgid, sig.(syscall.Signal))
+					}
+				}
+			}
 		}
 	}()
 	_ = c.Run()
+	close(done)
+	signal.Stop(ch)
 }
 
 func quotePy(s string) string {

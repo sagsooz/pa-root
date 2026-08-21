@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,7 @@ var (
 	fetchDisabled bool // set by -no-fetch
 	fetchTried    bool // first attempt happened?
 	fetchDead     bool // network confirmed down → skip future fetches
+	fetchMu       sync.Mutex
 )
 
 // fetchConfigure is called once from main() to apply CLI flags.
@@ -53,20 +55,27 @@ func ensureFile(relPath string, isDir bool) bool {
 	if _, err := os.Stat(dst); err == nil {
 		return true // already present locally
 	}
+	fetchMu.Lock()
 	if fetchDisabled || fetchDead || isDir {
+		fetchMu.Unlock()
 		return false
 	}
+	fetchMu.Unlock()
 
 	stepf("fetching %s from repo", relPath)
 	ok := fetchOne(relPath)
+
+	fetchMu.Lock()
 	if !fetchTried {
 		fetchTried = true
 		if !ok {
 			fetchDead = true
+			fetchMu.Unlock()
 			warnf("network fetch failed — disabling auto-download for the rest of the run")
 			return false
 		}
 	}
+	fetchMu.Unlock()
 	return ok
 }
 
@@ -82,7 +91,9 @@ func ensureFile(relPath string, isDir bool) bool {
 // VPS networks where curl sails through.
 func fetchOne(relPath string) bool {
 	dst := absBin(relPath)
+	fetchMu.Lock()
 	url := fetchRepo + "/" + relPath
+	fetchMu.Unlock()
 
 	// 1. curl
 	if hasBin("curl") {
@@ -112,11 +123,16 @@ func fetchOne(relPath string) bool {
 		return true
 	} else if status == 404 {
 		// Try the alternate branch once.
+		fetchMu.Lock()
 		alt := alternateBranch(fetchRepo)
-		if alt != fetchRepo {
+		same := alt != fetchRepo
+		fetchMu.Unlock()
+		if same {
 			if ok, _ := httpFetch(alt+"/"+relPath, dst); ok {
 				_ = os.Chmod(dst, 0o755)
+				fetchMu.Lock()
 				fetchRepo = alt
+				fetchMu.Unlock()
 				return true
 			}
 		}

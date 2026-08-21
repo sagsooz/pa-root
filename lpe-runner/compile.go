@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,7 +42,7 @@ func compileSource(e Exploit) runResult {
 	args = append(args, libs...)
 
 	infof("Compiling %s -> %s (gcc %s)", e.Path, bin, libs)
-	compileCmd := exec.Command("gcc", args...)
+	compileCmd := exec.CommandContext(gccTimeoutCtx(), "gcc", args...)
 	compileCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, err := compileCmd.CombinedOutput()
 	if err != nil {
@@ -79,7 +80,7 @@ func runDir(e Exploit) runResult {
 	// 2. make?
 	if hasBin("make") && hasFile(filepath.Join(dir, "Makefile")) {
 		infof("Building %s via make", e.Name)
-		mk := exec.Command("make")
+		mk := exec.CommandContext(gccTimeoutCtx(), "make")
 		mk.Dir = dir
 		mk.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		out, err := mk.CombinedOutput()
@@ -135,3 +136,19 @@ func guessLibs(path string) []string {
 
 // durSec converts seconds to time.Duration.
 func durSec(sec int) time.Duration { return time.Duration(sec) * time.Second }
+
+// gccTimeoutCtx returns a context that cancels after 90s — prevents a
+// hung gcc/make from blocking a worker forever (e.g. stale NFS mount,
+// pathological source file). 90s is generous: even -static links finish
+// well under that on any healthy box.
+func gccTimeoutCtx() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// fire-and-forget: the timer self-cancels via the deadline check
+	// when gcc exits normally. The cancel call happens in a goroutine
+	// to avoid leaking the timer if gcc finishes quickly.
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
+	return ctx
+}
