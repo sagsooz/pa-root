@@ -27,7 +27,8 @@ var (
 	flagOnlyKern = flag.Bool("kernel-filter", true, "Skip exploits whose kernel range does not match")
 	flagVerbose  = flag.Bool("v", false, "Verbose: print child stdout/stderr too")
 	flagRepo     = flag.String("repo", "", "GitHub raw base URL for auto-fetch (default: sagsooz/pa-root/main)")
-	flagNoFetch  = flag.Bool("no-fetch", false, "Disable auto-download of missing exploit files")
+	flagNoFetch   = flag.Bool("no-fetch", false, "Disable auto-download of missing exploit files")
+	flagNoMisconfig = flag.Bool("no-misconfig", false, "Skip filesystem/sudo/capabilities misconfig checks")
 )
 
 func usage() {
@@ -49,6 +50,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -repo URL           GitHub raw base for auto-fetch (default: sagsooz/pa-root/main)")
 	fmt.Fprintln(os.Stderr, "  -no-fetch           Disable auto-download of missing exploit files")
 	fmt.Fprintln(os.Stderr, "  -jobs N             Parallel exploit workers (default: auto)")
+	fmt.Fprintln(os.Stderr, "  -no-misconfig        Skip filesystem/sudo/capabilities misconfig checks")
 	fmt.Fprintln(os.Stderr, "")
 }
 
@@ -116,6 +118,14 @@ func runFullSweep(s *systemInfo, stop *bool) {
 	suidPhase(s, stop)
 	if *stop {
 		return
+	}
+
+	// Phase 1b: Filesystem / sudo / capabilities misconfig.
+	if !*flagNoMisconfig {
+		misconfigPhase(s, stop)
+		if *stop {
+			return
+		}
 	}
 
 	// Phase 2: autoroot.pl misconfig sweep (sudo -l, /etc/passwd, etc.)
