@@ -368,16 +368,13 @@ func (r *runResult) report() {
 // all Linux distros (ulimit is a POSIX shell builtin) and does not
 // depend on Go's SysProcAttr having an Rlimit field (go 1.21 lacks it).
 //
-// Limits (intentionally generous — exploits need room to work):
-//   -v 524288   virtual memory 512 MB   (prevents OOM-kill of the box)
-//   -u 64       max user processes 64   (prevents fork-bombs)
-//   -f 262144   max file size 256 MB     (prevents filling the disk)
-//   -t 120      CPU time 120s           (safety net for spinners)
-//   -n 256      open files 256         (prevents fd exhaustion)
+// Limits are auto-tuned to the server's actual RAM (read from
+// /proc/meminfo on Linux) so a tiny 512MB VPS and a 64GB box both get
+// sane defaults without any manual config. The limits are always a
+// fraction of total RAM so a single exploit can never OOM-kill the box.
 //
-// If /bin/sh is missing or the wrapper would break, return the original
-// argv unchanged (graceful degradation — better to run with no limits
-// than to not run at all).
+// If /bin/sh is missing or /proc is unavailable, we fall back to fixed
+// conservative defaults (better to run limited than to not run at all).
 func wrapWithUlimit(argv []string) []string {
 	if len(argv) == 0 {
 		return argv
@@ -388,7 +385,7 @@ func wrapWithUlimit(argv []string) []string {
 	}
 	// Build the ulimit command string + exec the real exploit.
 	// Use exec so /bin/sh is replaced (no extra shell process lingers).
-	ulimits := "ulimit -v 524288 -u 64 -f 262144 -t 120 -n 256 2>/dev/null;"
+	ulimits := "ulimit " + autoUlimitFlags() + " 2>/dev/null;"
 	// Shell-quote each argv element safely.
 	parts := make([]string, 0, len(argv))
 	for _, a := range argv {
@@ -396,6 +393,62 @@ func wrapWithUlimit(argv []string) []string {
 	}
 	cmdStr := ulimits + " exec " + strings.Join(parts, " ")
 	return []string{"/bin/sh", "-c", cmdStr}
+}
+
+// autoUlimitFlags reads /proc/meminfo and returns ulimit flags tuned
+// to the box. Strategy: cap each exploit to ~25% of total RAM, with a
+// floor of 128MB and a ceiling of 1GB. Fork/fd/file limits are fixed
+// (they don't depend on RAM). CPU time is fixed at 120s.
+//
+// Examples:
+//   512 MB VPS → -v 131072 (128 MB)   25% would be too tight
+//   2 GB box   → -v 524288 (512 MB)   25% of 2GB
+//   8 GB box   → -v 1048576 (1 GB)    capped at 1GB
+//   64 GB box  → -v 1048576 (1 GB)    capped at 1GB
+func autoUlimitFlags() string {
+	const (
+		floorKB   = 128 * 1024       // 128 MB floor
+		ceilingKB = 1024 * 1024     // 1 GB ceiling
+		frac      = 4                // use 1/4 of total RAM
+		forkLim   = 64               // max user processes
+		fileLim   = 256 * 1024       // 256 MB max file size (KB)
+		cpuLim   = 120               // 120s CPU
+		fdLim    = 256               // open files
+	)
+
+	ramKB := readMemTotalKB() // 0 if unknown
+	memKB := ramKB / frac
+	if memKB < floorKB {
+		memKB = floorKB
+	}
+	if memKB > ceilingKB {
+		memKB = ceilingKB
+	}
+	return fmt.Sprintf("-v %d -u %d -f %d -t %d -n %d",
+		memKB, forkLim, fileLim, cpuLim, fdLim)
+}
+
+// readMemTotalKB reads /proc/meminfo and returns MemTotal in KB.
+// Returns 0 if /proc is unavailable (non-Linux) or unreadable.
+// We do NOT cache this — it's called once per exploit, /proc is in
+// page cache, and it's faster than a single syscall.
+func readMemTotalKB() int64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	// First line is "MemTotal:       NNNN kB"
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				var n int64
+				fmt.Sscanf(fields[1], "%d", &n)
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // shellQuote wraps a string in single quotes for shell safety, escaping
