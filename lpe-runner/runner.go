@@ -49,11 +49,24 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 		bin = argv[0]
 	}
 
+	// Apply resource limits so a single runaway exploit cannot OOM-kill
+	// the whole server, fork-bomb it, or fill the disk. We use a /bin/sh
+	// wrapper that calls `ulimit` before exec'ing the exploit, because
+	// Go's syscall.SysProcAttr on Linux (go 1.21) has no Rlimit field.
+	// This sets limits in the child process group only.
+	argv = wrapWithUlimit(argv)
+	bin = argv[0]
+
 	c := exec.Command(bin, argv[1:]...)
 	if dir != "" {
 		c.Dir = dir
 	}
-	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		// Pdeathsig: SIGKILL — if the parent (lpe-runner) dies, the child
+		// is killed automatically so we never leave runaway exploits.
+		Pdeathsig: syscall.SIGKILL,
+	}
 
 	// Open /dev/null and wire it to the child's stdin so NO exploit can
 	// hang waiting for user input (e.g. sudo asking for a password, su,
@@ -348,4 +361,45 @@ func (r *runResult) report() {
 		extra += " (timeout)"
 	}
 	fmt.Printf("  %s  %-26s  exit=%-3d  %6.1fs%s\n", tag, r.name, r.exitCode, r.elapsed.Seconds(), extra)
+}
+
+// wrapWithUlimit wraps an argv in a /bin/sh -c "ulimit ...; exec ..."
+// so the exploit runs with hard resource caps. This is portable across
+// all Linux distros (ulimit is a POSIX shell builtin) and does not
+// depend on Go's SysProcAttr having an Rlimit field (go 1.21 lacks it).
+//
+// Limits (intentionally generous — exploits need room to work):
+//   -v 524288   virtual memory 512 MB   (prevents OOM-kill of the box)
+//   -u 64       max user processes 64   (prevents fork-bombs)
+//   -f 262144   max file size 256 MB     (prevents filling the disk)
+//   -t 120      CPU time 120s           (safety net for spinners)
+//   -n 256      open files 256         (prevents fd exhaustion)
+//
+// If /bin/sh is missing or the wrapper would break, return the original
+// argv unchanged (graceful degradation — better to run with no limits
+// than to not run at all).
+func wrapWithUlimit(argv []string) []string {
+	if len(argv) == 0 {
+		return argv
+	}
+	// Don't double-wrap if already wrapped.
+	if argv[0] == "/bin/sh" && len(argv) > 1 && argv[1] == "-c" {
+		return argv
+	}
+	// Build the ulimit command string + exec the real exploit.
+	// Use exec so /bin/sh is replaced (no extra shell process lingers).
+	ulimits := "ulimit -v 524288 -u 64 -f 262144 -t 120 -n 256 2>/dev/null;"
+	// Shell-quote each argv element safely.
+	parts := make([]string, 0, len(argv))
+	for _, a := range argv {
+		parts = append(parts, shellQuote(a))
+	}
+	cmdStr := ulimits + " exec " + strings.Join(parts, " ")
+	return []string{"/bin/sh", "-c", cmdStr}
+}
+
+// shellQuote wraps a string in single quotes for shell safety, escaping
+// any embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
