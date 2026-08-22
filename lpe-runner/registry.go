@@ -102,6 +102,8 @@ func registry() []Exploit {
 		{Name: "gameover.sh", Kind: kindScript, Path: "gameover.sh", Args: []string{"bash"}, Lo: [3]int{5, 11, 0}, Hi: [3]int{5, 19, 0}, Desc: "GameOver(lay) CVE-2023-2640/3262"},
 		{Name: "autoroot.pl", Kind: kindScript, Path: "autoroot.pl", Args: []string{"perl"}, Lo: z, Hi: z, Desc: "autoroot.pl phases", NoRoot: true},
 		{Name: "reverse.pl", Kind: kindScript, Path: "reverse.pl", Args: []string{"perl"}, Lo: z, Hi: z, Desc: "reverse shell (skip by default)", NoRoot: true},
+		{Name: "CVE-2021-3156", Kind: kindScript, Path: "CVE-2021-3156.py", Args: []string{"python3"}, Lo: z, Hi: z, Desc: "CVE-2021-3156 sudo Baron Samedit", Needs: []string{"python3"}},
+		{Name: "CVE-2025-32463", Kind: kindScript, Path: "CVE-2025-32463.sh", Args: []string{"bash"}, Lo: z, Hi: z, Desc: "CVE-2025-32463 sudo chroot chwoot", Needs: []string{"gcc"}},
 
 		// ── C sources requiring compile ─────────────────────────────────────
 		{Name: "dirty.c", Kind: kindCompile, Path: "dirty.c", Lo: [3]int{2, 6, 22}, Hi: [3]int{4, 99, 0}, Desc: "DirtyCow CVE-2016-5195", Needs: []string{"gcc"}, Timeout: 90},
