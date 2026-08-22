@@ -66,8 +66,10 @@ func runCopyfailMatrix(s *systemInfo, stop *bool) {
 		r.report()
 		// Follow-up: actually invoke the patched target so it (hopefully)
 		// spawns a privileged shell or sets /bin/bash SUID.
+		// Use runInteractive so the patched binary gets /dev/tty stdin
+		// (not /dev/null) and can drop into an interactive root shell.
 		if t.run != "" {
-			r2 := runIsolated(name+"#followup", "", strings.Fields(t.run), 30*time.Second)
+			r2 := runInteractive(name+"#followup", strings.Fields(t.run), 30*time.Second)
 			r2.report()
 			if r2.rootAfter || r2.suidAfter {
 				if !*flagNoSpawn {

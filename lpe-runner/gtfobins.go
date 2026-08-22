@@ -409,8 +409,12 @@ func tryCopyfailAgainst(s *systemInfo, suidPath string, stop *bool) bool {
 	r := runIsolated(name, "", []string{"python3", tmp}, 60*time.Second)
 	r.report()
 	// Also actually invoke the SUID binary so the patched code runs.
+	// Use runInteractive (not runIsolated) so the patched binary
+	// can spawn an interactive root shell via /dev/tty.
+	// runIsolated feeds /dev/null to stdin which makes the patched
+	// su/sudo/etc exit immediately before giving a shell.
 	if hasFile(suidPath) {
-		r2 := runIsolated(name+"#run", "", []string{suidPath}, 30*time.Second)
+		r2 := runInteractive(name+"#run", []string{suidPath}, 30*time.Second)
 		r2.report()
 		if r2.rootAfter || r2.suidAfter {
 			if !*flagNoSpawn {
