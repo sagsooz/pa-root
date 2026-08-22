@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -72,8 +73,24 @@ done:
 	close(jobs)
 }
 
+// crashedKernel is set once a kernel exploit (kindBinary) dies with a
+// hard crash signal (SIGSEGV/SIGABRT/SIGBUS). Once set, all remaining
+// kernel-binary exploits are skipped: a NULL-deref or double-free in a
+// kernel exploit can destabilize/panic the host, and running more
+// exploits of the same kind on an already-wounded kernel multiplies the
+// damage (especially under parallel workers). ulimit cannot prevent
+// this — it only caps user-space resources, not kernel-side faults.
+var crashedKernel atomic.Bool
+
 // runOneConcurrent is the concurrency-safe version of runOne.
 func runOneConcurrent(ctx context.Context, s *systemInfo, e Exploit, stop *bool) {
+	// Crash backoff: if a previous kernel exploit SIGSEGV'd, the kernel
+	// may be destabilized. Skip remaining kernel-binary exploits rather
+	// than hammering the same bug and risking a full panic.
+	if crashedKernel.Load() && e.Kind == kindBinary {
+		stepf("%-26s skip (kernel destabilized by previous crash)", e.Name)
+		return
+	}
 	if e.NoRoot {
 		return
 	}
@@ -134,6 +151,16 @@ func runOneConcurrent(ctx context.Context, s *systemInfo, e Exploit, stop *bool)
 	r.report()
 	if *flagVerbose {
 		printChildOutput(&r)
+	}
+	// Crash backoff: a kernel exploit that died with a hard crash signal
+	// (SIGSEGV/SIGABRT/SIGBUS) likely hit a NULL-deref or double-free in
+	// the kernel. Set the flag so remaining kernel-binary exploits are
+	// skipped — the kernel may already be destabilized and another hit
+	// of the same bug can panic the box.
+	if r.crashed && e.Kind == kindBinary &&
+		(r.signal == "segmentation fault" || r.signal == "aborted" || r.signal == "bus error") {
+		warnf("%s crashed with %s — skipping remaining kernel exploits", e.Name, r.signal)
+		crashedKernel.Store(true)
 	}
 	if r.rootAfter || r.suidAfter {
 		spawnOnce(s, &r, stop)

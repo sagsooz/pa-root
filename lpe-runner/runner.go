@@ -126,6 +126,17 @@ func runIsolated(name, dir string, argv []string, hardTimeout time.Duration) run
 					if is := ws.Signal(); is == syscall.SIGSEGV || is == syscall.SIGABRT ||
 						is == syscall.SIGBUS || is == syscall.SIGFPE || is == syscall.SIGILL {
 						r.crashed = true
+						// A hard crash signal (SIGSEGV/SIGABRT/SIGBUS/etc.)
+						// from a kernel exploit usually means a NULL-deref
+						// or double-free landed in-kernel. The process group
+						// is already SIGKILLed above, but the kernel may
+						// still be unwinding the fault (RIP teardown, slab
+						// cleanup). Give it 2s to settle before we let the
+						// runner touch the kernel again (e.g. re-checking
+						// /proc, spawning the next exploit) — otherwise a
+						// second hit on the same wounded code path can turn
+						// a survivable crash into a full panic.
+						time.Sleep(2 * time.Second)
 					}
 				}
 			}
