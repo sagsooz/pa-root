@@ -29,7 +29,7 @@ var (
 	flagVerbose  = flag.Bool("v", false, "Verbose: print child stdout/stderr too")
 	flagRepo     = flag.String("repo", "", "GitHub raw base URL for auto-fetch (default: sagsooz/pa-root/main)")
 	flagNoFetch   = flag.Bool("no-fetch", false, "Disable auto-download of missing exploit files")
-	flagNoMisconfig = flag.Bool("no-misconfig", false, "Skip filesystem/sudo/capabilities misconfig checks")
+	flagMisconfig = flag.Bool("misconfig", false, "Enable filesystem/sudo/capabilities misconfig checks (disabled by default — can destabilize servers)")
 )
 
 func usage() {
@@ -51,7 +51,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -repo URL           GitHub raw base for auto-fetch (default: sagsooz/pa-root/main)")
 	fmt.Fprintln(os.Stderr, "  -no-fetch           Disable auto-download of missing exploit files")
 	fmt.Fprintln(os.Stderr, "  -jobs N             Parallel exploit workers (default: auto)")
-	fmt.Fprintln(os.Stderr, "  -no-misconfig        Skip filesystem/sudo/capabilities misconfig checks")
+	fmt.Fprintln(os.Stderr, "  -misconfig          Enable filesystem/sudo/capabilities misconfig checks (disabled by default)")
 	fmt.Fprintln(os.Stderr, "")
 }
 
@@ -122,7 +122,10 @@ func runFullSweep(s *systemInfo, stop *bool) {
 	}
 
 	// Phase 1b: Filesystem / sudo / capabilities misconfig.
-	if !*flagNoMisconfig {
+	// DISABLED by default — the misconfig phase (especially systemd
+	// restart and PATH hijack) can destabilize the target server and
+	// make it appear hung. Enable with -misconfig if you want it.
+	if *flagMisconfig {
 		misconfigPhase(s, stop)
 		if *stop {
 			return
