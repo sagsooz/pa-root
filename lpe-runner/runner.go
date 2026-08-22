@@ -333,21 +333,20 @@ func spawnPTY(bin string, args ...string) {
 	defer tty.Close()
 
 	// ── Contexts 1 & 2: we have a controlling terminal ────────────────
-	// Prefer a real PTY via python3. pty.spawn does setsid+tcsetpgrp
-	// internally so the child becomes the terminal's foreground process
-	// group — this is what makes job control, Ctrl-C, and line editing
-	// work. We wire python's OWN fd 0/1/2 to /dev/tty (not os.Stdin,
-	// which may be the dead curl pipe) so pty._copy forwards real
-	// terminal I/O to the pty master.
+	// Prefer a real PTY. We try multiple methods in order of preference:
+	//  1. python3 pty.spawn — most portable, does setsid+tcsetpgrp
+	//  2. script(1)         — coreutils, available on most distros
+	//  3. raw exec           — last resort, no job control but interactive
+	//
+	// All methods wire fd 0/1/2 to /dev/tty so the shell reads from the
+	// real user terminal, not the dead curl|sh download pipe.
+
+	// 1. python3 pty.spawn
 	if hasBin("python3") {
 		c := exec.Command("python3", "-c",
 			fmt.Sprintf(
 				"import pty,os,sys;sys.exit(pty.spawn([%s]+%s))",
 				quotePy(bin), pyArgs(args)))
-		// Wire ALL three fds to /dev/tty. This is the fix for curl|sh:
-		// python's stdin becomes /dev/tty (the live terminal), not the
-		// closed download pipe, so pty._copy reads real keystrokes and
-		// forwards them to the shell instead of hitting EOF instantly.
 		c.Stdin = tty
 		c.Stdout = tty
 		c.Stderr = tty
@@ -355,7 +354,25 @@ func spawnPTY(bin string, args ...string) {
 			return
 		}
 		// If python3 failed (e.g. pty module unavailable on a stripped
-		// box), fall through to the raw exec path below.
+		// box), fall through to the next method.
+	}
+
+	// 2. script(1) — allocates a real PTY. Available on virtually all
+	// Linux distros (util-linux). `script -q -c '<cmd>' /dev/null`
+	// runs <cmd> in a new PTY, quiet, no typescript file.
+	if hasBin("script") {
+		cmdStr := bin
+		if len(args) > 0 {
+			cmdStr += " " + strings.Join(args, " ")
+		}
+		c := exec.Command("script", "-q", "-c", cmdStr, "/dev/null")
+		c.Stdin = tty
+		c.Stdout = tty
+		c.Stderr = tty
+		if err := c.Run(); err == nil {
+			return
+		}
+		// script failed — fall through to raw exec.
 	}
 
 	// ── Raw exec fallback (no python3, or python3 pty failed) ─────────
