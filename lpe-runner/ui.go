@@ -43,10 +43,8 @@ func isTTY(f *os.File) bool {
 func banner() {
 	fmt.Print(colW)
 	fmt.Println("==============================================================================")
-	fmt.Printf("  PabloRoot v%s  -  Crash-Resilient Localroot Orchestrator\n", version)
-	fmt.Println("  Auto-detect | Isolate | Timeout | Stop-on-root | English console")
+	fmt.Printf("  PabloRoot v%s\n", version)
 	fmt.Println("  Telegram: https://t.me/symlink")
-	fmt.Println("  Use only on systems you own or are explicitly authorized to test.")
 	fmt.Println("==============================================================================")
 	fmt.Print(colZ)
 	fmt.Println()
